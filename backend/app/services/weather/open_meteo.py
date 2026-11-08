@@ -1,0 +1,863 @@
+"""Open-Meteo rainfall provider and in-memory cache.
+
+Retrieves numerical weather prediction forecast data from Open-Meteo, normalizes
+into provider-independent models with explicit model semantics, and maintains
+a bounded single-process in-memory TTL cache with stale-data fallback.
+
+NOTE ON SINGLE-PROCESS IN-MEMORY CACHE:
+Cache state is stored in process memory and will reset upon application restart.
+Cache state is NOT shared across multiple worker processes or containers.
+Coordinate quantization (2 decimal places, ~1.1 km) is applied strictly as an
+internal caching optimization to reduce redundant external API calls; it does
+NOT represent an exact physical measurement station or sensor location.
+"""
+import asyncio
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+
+from app.core.config import settings
+from app.schemas.common import Coordinate
+from app.schemas.rainfall import (
+    CurrentRainfall,
+    DEFAULT_RAINFALL_CAVEATS,
+    ModelSourceMetadata,
+    PrecipitationStep,
+    RainfallProviderStatus,
+    RainfallResponse,
+    RainfallSummary,
+)
+from app.services.weather.grid import resolve_pilot_cell
+from app.services.weather.redis_client import weather_redis_client
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_utc_datetime(val: Optional[str]) -> Optional[datetime]:
+    """Parse ISO 8601 string into timezone-aware UTC datetime."""
+    if not val or not isinstance(val, str) or not val.strip():
+        return None
+    try:
+        clean_str = val.strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def parse_open_meteo_response(
+    raw_data: Dict[str, Any],
+    requested_lat: float,
+    requested_lon: float,
+    forecast_hours: int,
+    endpoint_url: str,
+    retrieved_at: datetime,
+    is_cached: bool = False,
+    is_stale: bool = False,
+) -> RainfallResponse:
+    """Parse and normalize Open-Meteo JSON into a validated RainfallResponse.
+
+    Validates schema structure, normalizes timestamps to UTC, computes summary metrics,
+    and preserves null/missing distinction from valid 0.0 mm amounts.
+    """
+    if not isinstance(raw_data, dict):
+        raise ValueError("Invalid Open-Meteo response: top-level JSON must be an object.")
+
+    # 1. Model & Grid Metadata
+    model_meta = ModelSourceMetadata(
+        source="Open-Meteo Weather Forecast API",
+        grid_latitude=raw_data.get("latitude"),
+        grid_longitude=raw_data.get("longitude"),
+        elevation_m=raw_data.get("elevation"),
+        generationtime_ms=raw_data.get("generationtime_ms"),
+        utc_offset_seconds=raw_data.get("utc_offset_seconds", 0) or 0,
+        timezone=str(raw_data.get("timezone", "UTC")),
+    )
+
+    # 2. Hourly Precipitation Series
+    hourly_block = raw_data.get("hourly")
+    if not isinstance(hourly_block, dict):
+        raise ValueError("Invalid Open-Meteo response: 'hourly' section is required.")
+
+    times = hourly_block.get("time")
+    if not isinstance(times, list) or not times:
+        raise ValueError("Invalid Open-Meteo response: 'hourly.time' list is required.")
+
+    precip_list = hourly_block.get("precipitation")
+    if not isinstance(precip_list, list):
+        precip_list = [None] * len(times)
+
+    prob_list = hourly_block.get("precipitation_probability")
+    if not isinstance(prob_list, list):
+        prob_list = [None] * len(times)
+
+    hourly_steps: List[PrecipitationStep] = []
+    # Bound steps to the requested forecast_hours horizon
+    limit = min(len(times), forecast_hours)
+
+    for i in range(limit):
+        raw_t = times[i]
+        parsed_dt = _parse_utc_datetime(raw_t)
+        if parsed_dt is None:
+            continue
+
+        raw_p = precip_list[i] if i < len(precip_list) else None
+        p_val: Optional[float] = None
+        if raw_p is not None:
+            try:
+                p_val = max(0.0, float(raw_p))
+            except (ValueError, TypeError):
+                p_val = None
+
+        raw_prob = prob_list[i] if i < len(prob_list) else None
+        prob_val: Optional[float] = None
+        if raw_prob is not None:
+            try:
+                prob_val = min(100.0, max(0.0, float(raw_prob)))
+            except (ValueError, TypeError):
+                prob_val = None
+
+        hourly_steps.append(
+            PrecipitationStep(
+                timestamp=parsed_dt,
+                precipitation_mm=p_val,
+                precipitation_probability_pct=prob_val,
+                interval_minutes=60,
+                unit="mm",
+                is_model_derived=True,
+            )
+        )
+
+    # 3. Current-window estimate (if supplied by provider)
+    current_obj: Optional[CurrentRainfall] = None
+    raw_current = raw_data.get("current")
+    if isinstance(raw_current, dict) and "time" in raw_current:
+        cur_dt = _parse_utc_datetime(raw_current.get("time"))
+        if cur_dt is not None:
+            raw_cur_p = raw_current.get("precipitation")
+            cur_p_val: Optional[float] = None
+            if raw_cur_p is not None:
+                try:
+                    cur_p_val = max(0.0, float(raw_cur_p))
+                except (ValueError, TypeError):
+                    cur_p_val = None
+
+            interval_sec = 900
+            if "interval" in raw_current:
+                try:
+                    interval_sec = int(raw_current["interval"])
+                except (ValueError, TypeError):
+                    interval_sec = 900
+
+            current_obj = CurrentRainfall(
+                timestamp=cur_dt,
+                interval_seconds=interval_sec,
+                precipitation_mm=cur_p_val,
+                unit="mm",
+                is_model_derived=True,
+                is_physical_observation=False,
+                interval_description=(
+                    f"Preceding {interval_sec // 60}-minute model accumulation estimate"
+                ),
+            )
+
+    # 4. Forecast Summary Metrics
+    non_null_precips = [s.precipitation_mm for s in hourly_steps if s.precipitation_mm is not None]
+    non_null_probs = [
+        s.precipitation_probability_pct
+        for s in hourly_steps
+        if s.precipitation_probability_pct is not None
+    ]
+
+    total_mm: Optional[float] = (
+        round(sum(non_null_precips), 2) if non_null_precips else None
+    )
+    max_hourly_mm: Optional[float] = (
+        round(max(non_null_precips), 2) if non_null_precips else None
+    )
+    max_prob: Optional[float] = (
+        round(max(non_null_probs), 1) if non_null_probs else None
+    )
+
+    valid_hours = len(non_null_precips)
+    is_complete = (valid_hours == forecast_hours and len(hourly_steps) == forecast_hours)
+
+    summary = RainfallSummary(
+        forecast_hours=forecast_hours,
+        total_precipitation_mm=total_mm,
+        max_hourly_precipitation_mm=max_hourly_mm,
+        max_probability_pct=max_prob,
+        valid_hours=valid_hours,
+        is_complete=is_complete,
+    )
+
+    # 5. Provider Status
+    provider_status = RainfallProviderStatus(
+        provider="open_meteo",
+        status="ok",
+        is_cached=is_cached,
+        is_stale=is_stale,
+        retrieved_at=retrieved_at,
+        error_message=None,
+        endpoint_url=endpoint_url,
+    )
+
+    return RainfallResponse(
+        provider=provider_status,
+        requested_coordinate=Coordinate(latitude=requested_lat, longitude=requested_lon),
+        data_type="forecast_model",
+        is_model_derived=True,
+        is_physical_observation=False,
+        model_metadata=model_meta,
+        current=current_obj,
+        hourly=hourly_steps,
+        summary=summary,
+        caveats=list(DEFAULT_RAINFALL_CAVEATS),
+    )
+
+
+@dataclass
+class _CachedRainfallEntry:
+    """Internal cache entry wrapper."""
+
+    response: RainfallResponse
+    cached_at: datetime
+    endpoint_url: str
+
+
+def calculate_daily_quota_cooldown_seconds(now: Optional[datetime] = None) -> float:
+    """Calculate remaining seconds until the next 00:00 UTC."""
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    else:
+        current_time = current_time.astimezone(timezone.utc)
+
+    next_midnight_utc = datetime.combine(
+        current_time.date() + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    return max(0.0, (next_midnight_utc - current_time).total_seconds())
+
+
+@dataclass
+class _FailureCooldownEntry:
+    """Internal failure cooldown entry wrapper."""
+
+    error_message: str
+    failed_at: datetime
+    cooldown_seconds: Optional[float] = None
+
+
+def _make_stale_response(
+    cached_resp: RainfallResponse,
+    cached_at: datetime,
+    error_message: str,
+    latitude: float,
+    longitude: float,
+    is_stale: bool = True,
+) -> RainfallResponse:
+    """Format an existing cached response as a degraded fallback."""
+    return cached_resp.model_copy(
+        update={
+            "provider": RainfallProviderStatus(
+                provider="open_meteo",
+                status="degraded",
+                is_cached=True,
+                is_stale=is_stale,
+                retrieved_at=cached_at,
+                error_message=error_message,
+                endpoint_url=cached_resp.provider.endpoint_url,
+            ),
+            "requested_coordinate": Coordinate(
+                latitude=latitude, longitude=longitude
+            ),
+        }
+    )
+
+
+def _make_unavailable_response(
+    endpoint_url: str,
+    error_message: str,
+    latitude: float,
+    longitude: float,
+) -> RainfallResponse:
+    """Format an explicit cold-start unavailable response."""
+    return RainfallResponse(
+        provider=RainfallProviderStatus(
+            provider="open_meteo",
+            status="unavailable",
+            is_cached=False,
+            is_stale=False,
+            retrieved_at=None,
+            error_message=error_message,
+            endpoint_url=endpoint_url,
+        ),
+        requested_coordinate=Coordinate(
+            latitude=latitude, longitude=longitude
+        ),
+        data_type="forecast_model",
+        is_model_derived=True,
+        is_physical_observation=False,
+        model_metadata=None,
+        current=None,
+        hourly=[],
+        summary=None,
+        caveats=list(DEFAULT_RAINFALL_CAVEATS),
+    )
+
+
+class OpenMeteoCache:
+    """Bounded in-memory TTL cache for single-process Open-Meteo forecasts.
+
+    Features:
+    - Quantized coordinate keying (2 decimal places ~1.1km)
+    - Deterministic time-injection for zero-sleep expiry testing
+    - Short cooldown window for upstream failure protection (HTTP 429, timeouts, network errors)
+    - Resets on application restart (single-process prototype)
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: int = 900,
+        failure_cooldown_seconds: int = 60,
+        max_failure_entries: int = 256,
+    ) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.failure_cooldown_seconds = failure_cooldown_seconds
+        self.max_failure_entries = max_failure_entries
+        self._entries: Dict[str, _CachedRainfallEntry] = {}
+        self._failures: Dict[str, _FailureCooldownEntry] = {}
+
+    @staticmethod
+    def make_key(latitude: float, longitude: float, forecast_hours: int) -> str:
+        """Create cache key from quantized coordinates and forecast horizon."""
+        q_lat = round(latitude, 2)
+        q_lon = round(longitude, 2)
+        return f"{q_lat:.2f}:{q_lon:.2f}:{forecast_hours}"
+
+    def get(
+        self, key: str, now: Optional[datetime] = None
+    ) -> Optional[Tuple[RainfallResponse, bool, datetime]]:
+        """Retrieve cached entry. Returns (response, is_stale, cached_at) or None."""
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+
+        current_time = now or datetime.now(timezone.utc)
+        age = (current_time - entry.cached_at).total_seconds()
+        is_stale = age > self.ttl_seconds
+        return entry.response, is_stale, entry.cached_at
+
+    def set(
+        self,
+        key: str,
+        response: RainfallResponse,
+        endpoint_url: str,
+        cached_at: Optional[datetime] = None,
+    ) -> None:
+        """Store response in cache and clear any active failure cooldown."""
+        saved_time = cached_at or datetime.now(timezone.utc)
+        self._entries[key] = _CachedRainfallEntry(
+            response=response,
+            cached_at=saved_time,
+            endpoint_url=endpoint_url,
+        )
+        self._failures.pop(key, None)
+
+    def get_failure(
+        self, key: str, now: Optional[datetime] = None
+    ) -> Optional[Tuple[str, datetime]]:
+        """Retrieve failure cooldown entry if still active. Returns (error_message, failed_at) or None."""
+        entry = self._failures.get(key)
+        if entry is None:
+            return None
+
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        else:
+            current_time = current_time.astimezone(timezone.utc)
+
+        failed_at = entry.failed_at
+        if failed_at.tzinfo is None:
+            failed_at = failed_at.replace(tzinfo=timezone.utc)
+        else:
+            failed_at = failed_at.astimezone(timezone.utc)
+
+        cooldown = (
+            entry.cooldown_seconds
+            if entry.cooldown_seconds is not None
+            else self.failure_cooldown_seconds
+        )
+        age = (current_time - failed_at).total_seconds()
+        if age <= cooldown:
+            return entry.error_message, entry.failed_at
+
+        # Expired cooldown: clean up
+        del self._failures[key]
+        return None
+
+    def set_failure(
+        self,
+        key: str,
+        error_message: str,
+        failed_at: Optional[datetime] = None,
+        cooldown_seconds: Optional[float] = None,
+    ) -> None:
+        """Store failure in cooldown table with bounded capacity eviction."""
+        saved_time = failed_at or datetime.now(timezone.utc)
+        if saved_time.tzinfo is None:
+            saved_time = saved_time.replace(tzinfo=timezone.utc)
+        else:
+            saved_time = saved_time.astimezone(timezone.utc)
+
+        if len(self._failures) >= self.max_failure_entries:
+            # Prune expired entries first
+            expired_keys = [
+                k
+                for k, v in self._failures.items()
+                if (
+                    saved_time
+                    - (
+                        v.failed_at.replace(tzinfo=timezone.utc)
+                        if v.failed_at.tzinfo is None
+                        else v.failed_at.astimezone(timezone.utc)
+                    )
+                ).total_seconds()
+                > (
+                    v.cooldown_seconds
+                    if v.cooldown_seconds is not None
+                    else self.failure_cooldown_seconds
+                )
+            ]
+            for k in expired_keys:
+                del self._failures[k]
+            # If still at capacity, evict oldest entry
+            if len(self._failures) >= self.max_failure_entries:
+                oldest_key = min(self._failures.keys(), key=lambda k: self._failures[k].failed_at)
+                del self._failures[oldest_key]
+
+        self._failures[key] = _FailureCooldownEntry(
+            error_message=error_message,
+            failed_at=saved_time,
+            cooldown_seconds=cooldown_seconds,
+        )
+
+    def clear(self) -> None:
+        """Clear all cached entries and failure cooldowns."""
+        self._entries.clear()
+        self._failures.clear()
+
+    @property
+    def entry_count(self) -> int:
+        """Number of cached entries."""
+        return len(self._entries)
+
+    @property
+    def failure_count(self) -> int:
+        """Number of active failure cooldown entries."""
+        return len(self._failures)
+
+
+class OpenMeteoProvider:
+    """Asynchronous client provider for Open-Meteo numerical weather forecasts."""
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+        cache_ttl_seconds: Optional[int] = None,
+        max_forecast_hours: Optional[int] = None,
+        failure_cooldown_seconds: Optional[int] = None,
+    ) -> None:
+        self.base_url = base_url or settings.OPEN_METEO_BASE_URL
+        self.timeout_seconds = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else settings.OPEN_METEO_REQUEST_TIMEOUT_SECONDS
+        )
+        ttl = (
+            cache_ttl_seconds
+            if cache_ttl_seconds is not None
+            else settings.OPEN_METEO_CACHE_TTL_SECONDS
+        )
+        self.max_forecast_hours = (
+            max_forecast_hours
+            if max_forecast_hours is not None
+            else settings.OPEN_METEO_MAX_FORECAST_HOURS
+        )
+        cooldown = (
+            failure_cooldown_seconds
+            if failure_cooldown_seconds is not None
+            else 60  # ponytail: default 60-second cooldown on upstream 429 / network failures
+        )
+        self.cache = OpenMeteoCache(ttl_seconds=ttl, failure_cooldown_seconds=cooldown)
+        self._lock = asyncio.Lock()
+
+    def build_query_params(
+        self, latitude: float, longitude: float, forecast_hours: int
+    ) -> Dict[str, Any]:
+        """Build validated Open-Meteo HTTP query parameters."""
+        return {
+            "latitude": latitude,
+            "longitude": longitude,
+            "hourly": "precipitation,precipitation_probability",
+            "current": "precipitation",
+            "forecast_hours": forecast_hours,
+            "timezone": "UTC",
+        }
+
+    def build_endpoint_url(
+        self, latitude: float, longitude: float, forecast_hours: int
+    ) -> str:
+        """Construct full request URL with query parameters for audit/status tracking."""
+        params = self.build_query_params(latitude, longitude, forecast_hours)
+        query_str = "&".join(f"{k}={v}" for k, v in params.items())
+        return f"{self.base_url}?{query_str}"
+
+    async def fetch_rainfall(
+        self,
+        latitude: float,
+        longitude: float,
+        forecast_hours: int = 24,
+        client: Optional[httpx.AsyncClient] = None,
+        allow_upstream: bool = True,
+    ) -> RainfallResponse:
+        """Retrieve rainfall forecast for a coordinate.
+
+        Concurrency & Resilience Flow:
+        1. Coordinate quantized cache lookup (fast hit).
+        2. If fresh cache hit -> return response marked is_cached=True.
+        3. If failure cooldown is active -> return degraded stale response or unavailable without hitting upstream.
+        4. If miss/stale -> acquire async lock to prevent duplicate concurrent upstream queries.
+        5. Under lock -> re-check fresh cache and failure cooldown (subsequent concurrent callers share first result).
+        6. On upstream success -> cache entry, clear failure cooldown, and return response.
+        7. On upstream failure:
+           - Record failure in cooldown table (60s default).
+           - If stale cached entry exists -> return stale data with status='degraded', is_stale=True.
+           - If cold start -> return explicit status='unavailable', empty series, no zero-rain claim.
+        """
+        hours = max(1, min(forecast_hours, self.max_forecast_hours))
+        cache_key = self.cache.make_key(latitude, longitude, hours)
+        endpoint_url = self.build_endpoint_url(latitude, longitude, hours)
+
+        # Fast Redis snapshot check for Navi Mumbai pilot cells
+        cell = resolve_pilot_cell(latitude, longitude)
+        if cell is not None and weather_redis_client.is_available:
+            snapshot = await weather_redis_client.get_snapshot(cell.cell_id)
+            if snapshot is not None:
+                retrieved_at = snapshot.provider.retrieved_at
+                now_utc = datetime.now(timezone.utc)
+                stale_threshold = settings.WEATHER_SNAPSHOT_STALE_AFTER_MINUTES * 60
+
+                if retrieved_at is not None:
+                    retrieved_utc = (
+                        retrieved_at.replace(tzinfo=timezone.utc)
+                        if retrieved_at.tzinfo is None
+                        else retrieved_at.astimezone(timezone.utc)
+                    )
+                    age_seconds = (now_utc - retrieved_utc).total_seconds()
+                    is_stale = age_seconds > stale_threshold
+                else:
+                    is_stale = True
+
+                status = "degraded" if is_stale else "ok"
+                error_msg = (
+                    f"Forecast age exceeds {settings.WEATHER_SNAPSHOT_STALE_AFTER_MINUTES}m freshness threshold"
+                    if is_stale
+                    else None
+                )
+                logger.info(
+                    "Redis cache hit: cell=%s is_stale=%s retrieved_at=%s",
+                    cell.cell_id,
+                    is_stale,
+                    retrieved_at,
+                )
+
+                return snapshot.model_copy(
+                    update={
+                        "provider": RainfallProviderStatus(
+                            provider="open_meteo",
+                            status=status,
+                            is_cached=True,
+                            is_stale=is_stale,
+                            retrieved_at=retrieved_at,
+                            error_message=error_msg,
+                            endpoint_url=snapshot.provider.endpoint_url,
+                        ),
+                        "requested_coordinate": Coordinate(
+                            latitude=latitude, longitude=longitude
+                        ),
+                    }
+                )
+            else:
+                logger.info("Redis cache miss for cell '%s'.", cell.cell_id)
+
+        # Fast cache check without waiting on lock if entry is fresh and Redis is healthy
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            cached_resp, is_stale, cached_at = cached
+            if not is_stale and weather_redis_client.is_available:
+                return cached_resp.model_copy(
+                    update={
+                        "provider": RainfallProviderStatus(
+                            provider="open_meteo",
+                            status="ok",
+                            is_cached=True,
+                            is_stale=False,
+                            retrieved_at=cached_at,
+                            error_message=None,
+                            endpoint_url=cached_resp.provider.endpoint_url,
+                        ),
+                        "requested_coordinate": Coordinate(
+                            latitude=latitude, longitude=longitude
+                        ),
+                    }
+                )
+            else:
+                logger.info("Redis cache miss for cell '%s'.", cell.cell_id)
+
+        # Fast failure cooldown check without waiting on lock
+        failure = self.cache.get_failure(cache_key)
+        if failure is not None:
+            fail_err, _ = failure
+            if cached is not None:
+                cached_resp, _, cached_at = cached
+                return _make_stale_response(
+                    cached_resp, cached_at, fail_err, latitude, longitude
+                )
+            return _make_unavailable_response(
+                endpoint_url, fail_err, latitude, longitude
+            )
+
+        # Check shared Redis daily quota cooldown across workers / restarts
+        if weather_redis_client.is_available:
+            shared_quota_err = await weather_redis_client.get_daily_quota_cooldown()
+            if shared_quota_err is not None:
+                if cached is not None:
+                    cached_resp, _, cached_at = cached
+                    return _make_stale_response(
+                        cached_resp, cached_at, shared_quota_err, latitude, longitude
+                    )
+                return _make_unavailable_response(
+                    endpoint_url, shared_quota_err, latitude, longitude
+                )
+
+        # If upstream requests are disallowed (normal API request path):
+        if not allow_upstream:
+            if not weather_redis_client.is_available:
+                logger.warning(
+                    "Redis unavailable during rainfall API request for coordinates (%s, %s). Checking local in-memory fallback.",
+                    latitude,
+                    longitude,
+                )
+            if cached is not None:
+                cached_resp, is_stale, cached_at = cached
+                err_msg = (
+                    "Shared weather cache unavailable; serving local snapshot."
+                    if not weather_redis_client.is_available
+                    else "Serving local snapshot while shared cache is refreshing."
+                )
+                return _make_stale_response(
+                    cached_resp, cached_at, err_msg, latitude, longitude, is_stale=is_stale
+                )
+
+            from fastapi import HTTPException
+            detail_msg = (
+                "Weather service temporarily unavailable. Shared weather cache is unreachable and no local snapshot is available."
+                if not weather_redis_client.is_available
+                else "Weather snapshot is initializing. Please retry in a moment."
+            )
+            raise HTTPException(status_code=503, detail=detail_msg)
+
+        # Acquire lock to prevent thundering herd / duplicate concurrent requests
+        async with self._lock:
+            # Re-check Redis snapshot under lock
+            if cell is not None and weather_redis_client.is_available:
+                snapshot = await weather_redis_client.get_snapshot(cell.cell_id)
+                if snapshot is not None:
+                    retrieved_at = snapshot.provider.retrieved_at
+                    now_utc = datetime.now(timezone.utc)
+                    stale_threshold = settings.WEATHER_SNAPSHOT_STALE_AFTER_MINUTES * 60
+
+                    if retrieved_at is not None:
+                        retrieved_utc = (
+                            retrieved_at.replace(tzinfo=timezone.utc)
+                            if retrieved_at.tzinfo is None
+                            else retrieved_at.astimezone(timezone.utc)
+                        )
+                        age_seconds = (now_utc - retrieved_utc).total_seconds()
+                        is_stale = age_seconds > stale_threshold
+                    else:
+                        is_stale = True
+
+                    status = "degraded" if is_stale else "ok"
+                    error_msg = (
+                        f"Forecast age exceeds {settings.WEATHER_SNAPSHOT_STALE_AFTER_MINUTES}m freshness threshold"
+                        if is_stale
+                        else None
+                    )
+
+                    return snapshot.model_copy(
+                        update={
+                            "provider": RainfallProviderStatus(
+                                provider="open_meteo",
+                                status=status,
+                                is_cached=True,
+                                is_stale=is_stale,
+                                retrieved_at=retrieved_at,
+                                error_message=error_msg,
+                                endpoint_url=snapshot.provider.endpoint_url,
+                            ),
+                            "requested_coordinate": Coordinate(
+                                latitude=latitude, longitude=longitude
+                            ),
+                        }
+                    )
+
+            # Re-check cache under lock
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                cached_resp, is_stale, cached_at = cached
+                if not is_stale:
+                    return cached_resp.model_copy(
+                        update={
+                            "provider": RainfallProviderStatus(
+                                provider="open_meteo",
+                                status="ok",
+                                is_cached=True,
+                                is_stale=False,
+                                retrieved_at=cached_at,
+                                error_message=None,
+                                endpoint_url=cached_resp.provider.endpoint_url,
+                            ),
+                            "requested_coordinate": Coordinate(
+                                latitude=latitude, longitude=longitude
+                            ),
+                        }
+                    )
+
+            # Re-check failure cooldown under lock (shared result for concurrent callers)
+            failure = self.cache.get_failure(cache_key)
+            if failure is not None:
+                fail_err, _ = failure
+                if cached is not None:
+                    cached_resp, _, cached_at = cached
+                    return _make_stale_response(
+                        cached_resp, cached_at, fail_err, latitude, longitude
+                    )
+                return _make_unavailable_response(
+                    endpoint_url, fail_err, latitude, longitude
+                )
+
+            should_close = False
+            if client is None:
+                client = httpx.AsyncClient(timeout=self.timeout_seconds)
+                should_close = True
+
+            now_utc = datetime.now(timezone.utc)
+            try:
+                params = self.build_query_params(latitude, longitude, hours)
+                headers = {"User-Agent": "VARSHA-Mobility-Safety/0.1"}
+                logger.info("Actual Open-Meteo HTTP request initiated: %s", endpoint_url)
+                resp = await client.get(self.base_url, params=params, headers=headers)
+                resp.raise_for_status()
+
+                raw_json = resp.json()
+                parsed = parse_open_meteo_response(
+                    raw_data=raw_json,
+                    requested_lat=latitude,
+                    requested_lon=longitude,
+                    forecast_hours=hours,
+                    endpoint_url=str(resp.url),
+                    retrieved_at=now_utc,
+                    is_cached=False,
+                    is_stale=False,
+                )
+                if cell is not None and parsed.model_metadata is not None:
+                    parsed.model_metadata.cell_id = cell.cell_id
+
+                self.cache.set(cache_key, parsed, str(resp.url), cached_at=now_utc)
+                if cell is not None and weather_redis_client.is_available:
+                    await weather_redis_client.set_snapshot(cell.cell_id, parsed)
+                return parsed
+            except asyncio.CancelledError:
+                raise
+            except httpx.HTTPStatusError as exc:
+                resp = exc.response
+                status_code = resp.status_code if resp is not None else 0
+                reason = resp.reason_phrase if resp is not None else ""
+                try:
+                    raw_text = resp.text or "" if resp is not None else ""
+                except Exception:
+                    raw_text = ""
+                body = raw_text[:200]
+                logger.warning(
+                    "Open-Meteo HTTP error: status=%s reason=%s body=%s",
+                    status_code,
+                    reason,
+                    body,
+                )
+                safe_err = (
+                    f"Upstream forecast request failed: HTTP {status_code}"
+                    if status_code
+                    else "Upstream forecast request failed: HTTPStatusError"
+                )
+                is_daily_limit = (
+                    status_code == 429
+                    and "daily api request limit exceeded" in raw_text.lower()
+                )
+                cooldown = (
+                    calculate_daily_quota_cooldown_seconds(now_utc)
+                    if is_daily_limit
+                    else None
+                )
+                if is_daily_limit and cooldown is not None:
+                    logger.warning("Daily quota cooldown activated for Open-Meteo: remaining_seconds=%.1f", cooldown)
+                    if weather_redis_client.is_available:
+                        await weather_redis_client.set_daily_quota_cooldown(cooldown, safe_err)
+                self.cache.set_failure(
+                    cache_key, safe_err, failed_at=now_utc, cooldown_seconds=cooldown
+                )
+
+                # Serve stale cache if available
+                if cached is not None:
+                    cached_resp, _, cached_at = cached
+                    return _make_stale_response(
+                        cached_resp, cached_at, safe_err, latitude, longitude
+                    )
+
+                # Cold-start failure: return explicit unavailable state
+                return _make_unavailable_response(
+                    endpoint_url, safe_err, latitude, longitude
+                )
+            except Exception as exc:
+                safe_err = f"Upstream forecast request failed: {type(exc).__name__}"
+                logger.warning("Open-Meteo fetch error: %s", exc)
+                self.cache.set_failure(cache_key, safe_err, failed_at=now_utc)
+
+                # Serve stale cache if available
+                if cached is not None:
+                    cached_resp, _, cached_at = cached
+                    return _make_stale_response(
+                        cached_resp, cached_at, safe_err, latitude, longitude
+                    )
+
+                # Cold-start failure: return explicit unavailable state
+                return _make_unavailable_response(
+                    endpoint_url, safe_err, latitude, longitude
+                )
+            finally:
+                if should_close:
+                    await client.aclose()
+
+
+# Global singleton instance
+open_meteo_provider = OpenMeteoProvider()
