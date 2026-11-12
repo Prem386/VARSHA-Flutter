@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>VARSHA uses your location to display your position on the map and calculate safe routes during monsoon risks.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>VARSHA uses your location to display your position on the map and calculate safe routes during monsoon risks.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
