@@ -1,6 +1,6 @@
 # VARSHA Flutter
 
-Independent college mini project for weather monitoring, rainfall forecasting, and disaster alert notifications.
+VARSHA is a predictive monsoon mobility and route safety application designed to evaluate urban flood risks, monitor weather conditions, and help users identify safer travel corridors. The solution pairs a cross-platform Flutter mobile client with a high-performance Python FastAPI backend to deliver explainable route safety scoring, live weather forecasts, and official disaster alerts for urban transit corridors.
 
 ## Project Structure
 

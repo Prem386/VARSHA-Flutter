@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/pilot_constants.dart';
 
@@ -44,7 +45,10 @@ class AboutSheet extends StatelessWidget {
 
               // Header
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 8,
+                ),
                 child: Row(
                   children: [
                     const Expanded(
@@ -103,12 +107,18 @@ class AboutSheet extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: AppColors.background,
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: AppColors.riskModerate.withAlpha(77)),
+                        border: Border.all(
+                          color: AppColors.riskModerate.withAlpha(77),
+                        ),
                       ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.warning_amber_rounded, color: AppColors.riskModerate, size: 20),
+                          const Icon(
+                            Icons.warning_amber_rounded,
+                            color: AppColors.riskModerate,
+                            size: 20,
+                          ),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
@@ -196,11 +206,23 @@ class AboutSheet extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
 
-                    _buildAttributionItem('Base Map & Roads', 'OpenStreetMap contributors'),
-                    _buildAttributionItem('Weather Prediction', 'Open-Meteo NWP API'),
-                    _buildAttributionItem('Disaster Warnings', 'NDMA SACHET (CAP 1.2)'),
+                    _buildAttributionItem(
+                      'Base Map & Roads',
+                      'OpenStreetMap contributors',
+                    ),
+                    _buildAttributionItem(
+                      'Weather Prediction',
+                      'Open-Meteo NWP API',
+                    ),
+                    _buildAttributionItem(
+                      'Disaster Warnings',
+                      'NDMA SACHET (CAP 1.2)',
+                    ),
                     _buildAttributionItem('Routing Engine', 'OSRM Road Router'),
-                    _buildAttributionItem('Forward Geocoding', 'Geoapify Places API'),
+                    _buildAttributionItem(
+                      'Forward Geocoding',
+                      'Geoapify Places API',
+                    ),
 
                     const SizedBox(height: 24),
 
@@ -210,7 +232,9 @@ class AboutSheet extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: AppColors.amberLight.withAlpha(38),
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: AppColors.amber.withAlpha(77)),
+                        border: Border.all(
+                          color: AppColors.amber.withAlpha(77),
+                        ),
                       ),
                       child: const Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -268,7 +292,11 @@ class AboutSheet extends StatelessWidget {
               color: AppColors.textPrimary,
             ),
           ),
-          childrenPadding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
+          childrenPadding: const EdgeInsets.only(
+            left: 16,
+            right: 16,
+            bottom: 16,
+          ),
           children: [
             Text(
               content,
@@ -295,12 +323,21 @@ class AboutSheet extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: AppColors.textMuted))),
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+            ),
+          ),
           const SizedBox(width: 8),
           Flexible(
             child: Text(
               value,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
               textAlign: TextAlign.end,
             ),
           ),
