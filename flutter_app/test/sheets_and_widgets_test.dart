@@ -260,5 +260,555 @@ void main() {
         findsOneWidget,
       );
     });
+
+    testWidgets('displays Unavailable for null rainfall and 0.0 mm for genuine zero', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      // Test A: Null precipitation
+      final nullRain = const RainfallResponse(
+        provider: RainfallProviderStatus(
+          provider: 'open-meteo',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          endpointUrl: '',
+        ),
+        requestedCoordinate: {'lat': 19.033, 'lon': 73.0297},
+        dataType: 'hourly',
+        isModelDerived: true,
+        isPhysicalObservation: false,
+        current: CurrentRainfall(
+          timestamp: '2026-11-12T07:00:00Z',
+          intervalSeconds: 900,
+          precipitationMm: null, // Null value!
+          unit: 'mm',
+          isModelDerived: true,
+          isPhysicalObservation: false,
+          intervalDescription: 'Past 15 minutes',
+        ),
+        hourly: [],
+        caveats: [],
+      );
+
+      final emptyAlerts = const AlertListResponse(
+        provider: AlertProviderStatus(
+          provider: 'sachet',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          feedUrl: '',
+        ),
+        total: 0,
+        alerts: [],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialRainfall: nullRain,
+              initialAlerts: emptyAlerts,
+            ),
+          ),
+        ),
+      );
+
+      // Null should display 'Unavailable', NOT '0.0 mm'
+      expect(find.text('Unavailable'), findsWidgets);
+      expect(find.text('0.0 mm'), findsNothing);
+
+      // Test B: Genuine zero precipitation
+      final zeroRain = const RainfallResponse(
+        provider: RainfallProviderStatus(
+          provider: 'open-meteo',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          endpointUrl: '',
+        ),
+        requestedCoordinate: {'lat': 19.033, 'lon': 73.0297},
+        dataType: 'hourly',
+        isModelDerived: true,
+        isPhysicalObservation: false,
+        current: CurrentRainfall(
+          timestamp: '2026-11-12T07:00:00Z',
+          intervalSeconds: 900,
+          precipitationMm: 0.0, // Genuine zero!
+          unit: 'mm',
+          isModelDerived: true,
+          isPhysicalObservation: false,
+          intervalDescription: 'Past 15 minutes',
+        ),
+        hourly: [],
+        caveats: [],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialRainfall: zeroRain,
+              initialAlerts: emptyAlerts,
+            ),
+          ),
+        ),
+      );
+
+      // Genuine zero must display '0.0 mm'
+      expect(find.text('0.0 mm'), findsOneWidget);
+    });
+
+    testWidgets('displays stale fallback warning banner when data is degraded or stale', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final staleRain = const RainfallResponse(
+        provider: RainfallProviderStatus(
+          provider: 'open-meteo',
+          status: 'degraded',
+          isCached: true,
+          isStale: true,
+          retrievedAt: '2026-11-12T06:00:00Z',
+          endpointUrl: '',
+        ),
+        requestedCoordinate: {'lat': 19.033, 'lon': 73.0297},
+        dataType: 'hourly',
+        isModelDerived: true,
+        isPhysicalObservation: false,
+        current: CurrentRainfall(
+          timestamp: '2026-11-12T06:00:00Z',
+          intervalSeconds: 900,
+          precipitationMm: 3.5,
+          unit: 'mm',
+          isModelDerived: true,
+          isPhysicalObservation: false,
+          intervalDescription: 'Past 15 minutes',
+        ),
+        hourly: [],
+        caveats: [],
+      );
+
+      final emptyAlerts = const AlertListResponse(
+        provider: AlertProviderStatus(
+          provider: 'sachet',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          feedUrl: '',
+        ),
+        total: 0,
+        alerts: [],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialRainfall: staleRain,
+              initialAlerts: emptyAlerts,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('⚠ Stale Fallback'), findsOneWidget);
+      expect(
+        find.textContaining('Notice: Open-Meteo upstream is currently unreachable.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('displays incomplete forecast notice and Open-Meteo attribution', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final incompleteRain = const RainfallResponse(
+        provider: RainfallProviderStatus(
+          provider: 'open-meteo',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          retrievedAt: '2026-11-12T07:00:00Z',
+          endpointUrl: '',
+        ),
+        requestedCoordinate: {'lat': 19.033, 'lon': 73.0297},
+        dataType: 'hourly',
+        isModelDerived: true,
+        isPhysicalObservation: false,
+        current: CurrentRainfall(
+          timestamp: '2026-11-12T07:00:00Z',
+          intervalSeconds: 900,
+          precipitationMm: 1.0,
+          unit: 'mm',
+          isModelDerived: true,
+          isPhysicalObservation: false,
+          intervalDescription: 'Past 15 minutes',
+        ),
+        hourly: [],
+        summary: RainfallSummary(
+          forecastHours: 24,
+          validHours: 18,
+          isComplete: false, // Incomplete forecast!
+          totalPrecipitationMm: 12.0,
+          maxHourlyPrecipitationMm: 3.5,
+          maxProbabilityPct: 80,
+        ),
+        caveats: [],
+      );
+
+      final emptyAlerts = const AlertListResponse(
+        provider: AlertProviderStatus(
+          provider: 'sachet',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          feedUrl: '',
+        ),
+        total: 0,
+        alerts: [],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialRainfall: incompleteRain,
+              initialAlerts: emptyAlerts,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Total Expected (Partial: 18/24h)'), findsOneWidget);
+      expect(
+        find.textContaining('* Incomplete forecast: 6 of 24 hourly intervals were missing'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Weather forecast data from Open-Meteo.com (Licensed under CC BY 4.0).'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('displays error card when weather provider status is unavailable', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final unavailableRain = const RainfallResponse(
+        provider: RainfallProviderStatus(
+          provider: 'open-meteo',
+          status: 'unavailable',
+          isCached: false,
+          isStale: false,
+          errorMessage: 'Open-Meteo upstream is unreachable (503)',
+          endpointUrl: '',
+        ),
+        requestedCoordinate: {'lat': 19.033, 'lon': 73.0297},
+        dataType: 'hourly',
+        isModelDerived: true,
+        isPhysicalObservation: false,
+        hourly: [],
+        caveats: [],
+      );
+
+      final emptyAlerts = const AlertListResponse(
+        provider: AlertProviderStatus(
+          provider: 'sachet',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          feedUrl: '',
+        ),
+        total: 0,
+        alerts: [],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialRainfall: unavailableRain,
+              initialAlerts: emptyAlerts,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Rainfall forecast unavailable'), findsOneWidget);
+      expect(find.text('Open-Meteo upstream is unreachable (503)'), findsOneWidget);
+    });
+
+    testWidgets('renders alert event badge and urgency badge, skipping unknown urgency', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final alerts = AlertListResponse(
+        provider: const AlertProviderStatus(
+          provider: 'sachet',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          feedUrl: '',
+        ),
+        total: 2,
+        alerts: const [
+          NormalizedAlert(
+            provider: 'sachet',
+            identifier: 'alert-1',
+            sender: 'IMD Mumbai',
+            status: 'Actual',
+            msgType: 'Alert',
+            event: 'Flash Flood',
+            headline: 'Flash flood alert',
+            severity: 'Extreme',
+            urgency: 'Immediate',
+            certainty: 'Observed',
+            isActive: true,
+            retrievedAt: '2026-11-12T07:00:00Z',
+            alternateLanguages: [],
+            geocodes: [],
+            geometryType: 'none',
+            hasSpatialGeometry: false,
+            warnings: [],
+          ),
+          NormalizedAlert(
+            provider: 'sachet',
+            identifier: 'alert-2',
+            sender: 'IMD Mumbai',
+            status: 'Actual',
+            msgType: 'Alert',
+            event: 'Heavy Rain',
+            headline: 'Heavy rain alert',
+            severity: 'Moderate',
+            urgency: 'Unknown',
+            certainty: 'Likely',
+            isActive: true,
+            retrievedAt: '2026-11-12T07:00:00Z',
+            alternateLanguages: [],
+            geocodes: [],
+            geometryType: 'none',
+            hasSpatialGeometry: false,
+            warnings: [],
+          ),
+        ],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialAlerts: alerts,
+            ),
+          ),
+        ),
+      );
+
+      // Event badges
+      expect(find.text('Flash Flood'), findsOneWidget);
+      expect(find.text('Heavy Rain'), findsOneWidget);
+
+      // Urgency badges
+      expect(find.text('Immediate Urgency'), findsOneWidget);
+      expect(find.text('Unknown Urgency'), findsNothing);
+
+      // Attribution
+      expect(
+        find.text('Official disaster warnings from NDMA SACHET (Common Alerting Protocol 1.2).'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('renders effective and expiry timestamps formatted in IST and handles missing timestamps', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final alerts = AlertListResponse(
+        provider: const AlertProviderStatus(
+          provider: 'sachet',
+          status: 'ok',
+          isCached: false,
+          isStale: false,
+          feedUrl: '',
+        ),
+        total: 2,
+        alerts: const [
+          NormalizedAlert(
+            provider: 'sachet',
+            identifier: 'alert-both',
+            sender: 'IMD',
+            status: 'Actual',
+            msgType: 'Alert',
+            event: 'Cyclone',
+            headline: 'Cyclone warning',
+            severity: 'Severe',
+            urgency: 'Expected',
+            certainty: 'Observed',
+            isActive: true,
+            effective: '2026-08-15T12:00:00Z',
+            expires: '2026-08-15T18:00:00Z',
+            retrievedAt: '2026-08-15T12:00:00Z',
+            alternateLanguages: [],
+            geocodes: [],
+            geometryType: 'none',
+            hasSpatialGeometry: false,
+            warnings: [],
+          ),
+          NormalizedAlert(
+            provider: 'sachet',
+            identifier: 'alert-expires-only',
+            sender: 'IMD',
+            status: 'Actual',
+            msgType: 'Alert',
+            headline: 'Advisory without effective date',
+            severity: 'Minor',
+            urgency: 'Future',
+            certainty: 'Possible',
+            isActive: true,
+            effective: null,
+            expires: '2026-08-16T06:30:00Z',
+            retrievedAt: '2026-08-15T12:00:00Z',
+            alternateLanguages: [],
+            geocodes: [],
+            geometryType: 'none',
+            hasSpatialGeometry: false,
+            warnings: [],
+          ),
+        ],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialAlerts: alerts,
+            ),
+          ),
+        ),
+      );
+
+      // Verify formatted IST timeline strings
+      expect(find.textContaining('Effective: 15 Aug, 5:30 PM IST'), findsOneWidget);
+      expect(find.textContaining('Expires: 15 Aug, 11:30 PM IST'), findsOneWidget);
+      expect(find.textContaining('Expires: 16 Aug, 12:00 PM IST'), findsOneWidget);
+    });
+
+    testWidgets('displays stale alert warning banner when alert feed is degraded or stale', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final staleAlerts = AlertListResponse(
+        provider: const AlertProviderStatus(
+          provider: 'sachet',
+          status: 'degraded',
+          isCached: true,
+          isStale: true,
+          retrievedAt: '2026-11-12T05:00:00Z',
+          feedUrl: 'https://sachet.ndma.gov.in',
+        ),
+        total: 1,
+        alerts: const [
+          NormalizedAlert(
+            provider: 'sachet',
+            identifier: 'cached-alert',
+            sender: 'NDMA',
+            status: 'Actual',
+            msgType: 'Alert',
+            headline: 'Cached Warning',
+            severity: 'Moderate',
+            urgency: 'Expected',
+            certainty: 'Likely',
+            isActive: true,
+            retrievedAt: '2026-11-12T05:00:00Z',
+            alternateLanguages: [],
+            geocodes: [],
+            geometryType: 'none',
+            hasSpatialGeometry: false,
+            warnings: [],
+          ),
+        ],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialAlerts: staleAlerts,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.textContaining('⚠ Stale Fallback'), findsOneWidget);
+      expect(
+        find.textContaining('Notice: NDMA SACHET feed is unreachable. Displaying cached alerts from 12 Nov, 10:30 AM IST.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('displays error card when alerts provider status is unavailable', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final unavailableAlerts = const AlertListResponse(
+        provider: AlertProviderStatus(
+          provider: 'sachet',
+          status: 'unavailable',
+          isCached: false,
+          isStale: false,
+          errorMessage: 'NDMA SACHET CAP RSS feed connection timed out',
+          feedUrl: 'https://sachet.ndma.gov.in',
+        ),
+        total: 0,
+        alerts: [],
+        spatialFilterApplied: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: WeatherAlertsSheet(
+              initialAlerts: unavailableAlerts,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Alerts feed unavailable'), findsOneWidget);
+      expect(find.text('NDMA SACHET CAP RSS feed connection timed out'), findsOneWidget);
+      expect(find.text('No Active Official Disaster Alerts'), findsNothing);
+    });
   });
 }

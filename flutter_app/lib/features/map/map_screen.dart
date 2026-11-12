@@ -304,6 +304,7 @@ class _MapScreenState extends State<MapScreen> {
         onOpenWeather: () {
           WeatherAlertsSheet.show(
             context,
+            weatherService: _weatherService,
             initialRainfall: _rainfallData,
             initialAlerts: _alertsData,
             onDataRefreshed: (rain, alerts) {

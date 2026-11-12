@@ -237,11 +237,11 @@ List<PrecipitationStep> selectNextSixForecastHours(
   final validWithDates = <MapEntry<PrecipitationStep, DateTime>>[];
   for (final step in hourly) {
     try {
-      final parsed = DateTime.parse(
-        step.timestamp.endsWith('Z') || step.timestamp.contains('+')
-            ? step.timestamp
-            : '${step.timestamp}Z',
-      );
+      final normalized = step.timestamp.endsWith('Z') ||
+              RegExp(r'[+-]\d{2}(:\d{2})?$').hasMatch(step.timestamp)
+          ? step.timestamp
+          : '${step.timestamp}Z';
+      final parsed = DateTime.parse(normalized).toUtc();
       validWithDates.add(MapEntry(step, parsed));
     } catch (_) {
       // Skip invalid timestamp
@@ -256,11 +256,12 @@ List<PrecipitationStep> selectNextSixForecastHours(
   // Determine current hour cutoff
   DateTime? cutoff;
   if (referenceTime != null) {
+    final refUtc = referenceTime.toUtc();
     cutoff = DateTime.utc(
-      referenceTime.year,
-      referenceTime.month,
-      referenceTime.day,
-      referenceTime.hour,
+      refUtc.year,
+      refUtc.month,
+      refUtc.day,
+      refUtc.hour,
     );
   }
 
@@ -269,4 +270,48 @@ List<PrecipitationStep> selectNextSixForecastHours(
       : validWithDates;
 
   return futureSteps.take(6).map((e) => e.key).toList();
+}
+
+/// Formats an ISO-8601 timestamp into a 12-hour IST time slot string (e.g., '1:30 PM').
+String formatHourSlotIst(String? isoStr) {
+  if (isoStr == null || isoStr.isEmpty) return '—';
+  try {
+    final normalized = isoStr.endsWith('Z') ||
+            RegExp(r'[+-]\d{2}(:\d{2})?$').hasMatch(isoStr)
+        ? isoStr
+        : '${isoStr}Z';
+    final utc = DateTime.parse(normalized).toUtc();
+    final ist = utc.add(const Duration(hours: 5, minutes: 30));
+    final hour = ist.hour % 12 == 0 ? 12 : ist.hour % 12;
+    final minute = ist.minute.toString().padLeft(2, '0');
+    final ampm = ist.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minute $ampm';
+  } catch (_) {
+    return isoStr;
+  }
+}
+
+/// Formats an ISO-8601 timestamp into an IST date-time string (e.g., '15 Aug, 5:30 PM IST').
+String formatTimestampIst(String? isoStr) {
+  if (isoStr == null || isoStr.isEmpty) return 'Not specified';
+  try {
+    final normalized = isoStr.endsWith('Z') ||
+            RegExp(r'[+-]\d{2}(:\d{2})?$').hasMatch(isoStr)
+        ? isoStr
+        : '${isoStr}Z';
+    final utc = DateTime.parse(normalized).toUtc();
+    final ist = utc.add(const Duration(hours: 5, minutes: 30));
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    final month = months[ist.month - 1];
+    final day = ist.day;
+    final hour = ist.hour % 12 == 0 ? 12 : ist.hour % 12;
+    final minute = ist.minute.toString().padLeft(2, '0');
+    final ampm = ist.hour >= 12 ? 'PM' : 'AM';
+    return '$day $month, $hour:$minute $ampm IST';
+  } catch (_) {
+    return isoStr;
+  }
 }

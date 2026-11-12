@@ -17,6 +17,9 @@ class WeatherService {
   final http.Client _client;
   static const Duration cacheTtl = Duration(minutes: 5);
 
+  /// Shared application-level instance preserving 5-minute cache across sheets.
+  static final WeatherService shared = WeatherService();
+
   final Map<String, _RainfallCacheEntry> _rainfallCache = {};
   final Map<String, Future<RainfallResponse>> _inFlightRequests = {};
 

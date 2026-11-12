@@ -5,21 +5,27 @@ import '../../models/weather.dart';
 import '../../services/weather/weather_service.dart';
 
 class WeatherAlertsSheet extends StatefulWidget {
+  final WeatherService? weatherService;
   final RainfallResponse? initialRainfall;
   final AlertListResponse? initialAlerts;
+  final DateTime? referenceTime;
   final void Function(RainfallResponse rain, AlertListResponse alerts)? onDataRefreshed;
 
   const WeatherAlertsSheet({
     super.key,
+    this.weatherService,
     this.initialRainfall,
     this.initialAlerts,
+    this.referenceTime,
     this.onDataRefreshed,
   });
 
   static void show(
     BuildContext context, {
+    WeatherService? weatherService,
     RainfallResponse? initialRainfall,
     AlertListResponse? initialAlerts,
+    DateTime? referenceTime,
     void Function(RainfallResponse rain, AlertListResponse alerts)? onDataRefreshed,
   }) {
     showModalBottomSheet(
@@ -27,8 +33,10 @@ class WeatherAlertsSheet extends StatefulWidget {
       isScrollControlled: true,
       useSafeArea: true,
       builder: (context) => WeatherAlertsSheet(
+        weatherService: weatherService,
         initialRainfall: initialRainfall,
         initialAlerts: initialAlerts,
+        referenceTime: referenceTime,
         onDataRefreshed: onDataRefreshed,
       ),
     );
@@ -50,12 +58,49 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
   @override
   void initState() {
     super.initState();
-    _weatherService = WeatherService();
+    _weatherService = widget.weatherService ?? WeatherService.shared;
     _rainfall = widget.initialRainfall;
     _alerts = widget.initialAlerts;
 
+    if (_rainfall != null && _rainfall!.provider.status == 'unavailable') {
+      _rainfallError = _rainfall!.provider.errorMessage ??
+          'Rainfall forecast unavailable from upstream provider';
+    }
+
+    if (_alerts != null && _alerts!.provider.status == 'unavailable') {
+      _alertsError = _alerts!.provider.errorMessage ??
+          'Official alerts provider unavailable';
+    }
+
     if (_rainfall == null || _alerts == null) {
       _loadData();
+    }
+  }
+
+  @override
+  void didUpdateWidget(WeatherAlertsSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialRainfall != oldWidget.initialRainfall) {
+      setState(() {
+        _rainfall = widget.initialRainfall;
+        if (_rainfall != null && _rainfall!.provider.status == 'unavailable') {
+          _rainfallError = _rainfall!.provider.errorMessage ??
+              'Rainfall forecast unavailable from upstream provider';
+        } else if (_rainfall != null) {
+          _rainfallError = null;
+        }
+      });
+    }
+    if (widget.initialAlerts != oldWidget.initialAlerts) {
+      setState(() {
+        _alerts = widget.initialAlerts;
+        if (_alerts != null && _alerts!.provider.status == 'unavailable') {
+          _alertsError = _alerts!.provider.errorMessage ??
+              'Official alerts provider unavailable';
+        } else if (_alerts != null) {
+          _alertsError = null;
+        }
+      });
     }
   }
 
@@ -89,7 +134,17 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
 
   Future<RainfallResponse?> _safeFetchRainfall() async {
     try {
-      return await _weatherService.fetchRainfallForecast();
+      final res = await _weatherService.fetchRainfallForecast();
+      if (res.provider.status == 'unavailable') {
+        if (mounted) {
+          setState(() {
+            _rainfallError = res.provider.errorMessage ??
+                'Rainfall forecast unavailable from upstream provider';
+          });
+        }
+        return null;
+      }
+      return res;
     } catch (e) {
       if (mounted) setState(() => _rainfallError = e.toString());
       return null;
@@ -98,7 +153,17 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
 
   Future<AlertListResponse?> _safeFetchAlerts() async {
     try {
-      return await _weatherService.fetchOfficialAlerts();
+      final res = await _weatherService.fetchOfficialAlerts();
+      if (res.provider.status == 'unavailable') {
+        if (mounted) {
+          setState(() {
+            _alertsError = res.provider.errorMessage ??
+                'Official alerts provider unavailable';
+          });
+        }
+        return null;
+      }
+      return res;
     } catch (e) {
       if (mounted) setState(() => _alertsError = e.toString());
       return null;
@@ -121,7 +186,37 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final nextSixHours = selectNextSixForecastHours(_rainfall?.hourly);
+    DateTime? effectiveRefTime = widget.referenceTime;
+    if (effectiveRefTime == null &&
+        _rainfall?.current?.timestamp != null &&
+        _rainfall!.current!.timestamp.isNotEmpty) {
+      try {
+        final raw = _rainfall!.current!.timestamp;
+        final normalized = raw.endsWith('Z') || RegExp(r'[+-]\d{2}(:\d{2})?$').hasMatch(raw)
+            ? raw
+            : '${raw}Z';
+        effectiveRefTime = DateTime.parse(normalized).toUtc();
+      } catch (_) {}
+    }
+    if (effectiveRefTime == null &&
+        _rainfall?.provider.retrievedAt != null &&
+        _rainfall!.provider.retrievedAt!.isNotEmpty) {
+      try {
+        final raw = _rainfall!.provider.retrievedAt!;
+        final normalized = raw.endsWith('Z') || RegExp(r'[+-]\d{2}(:\d{2})?$').hasMatch(raw)
+            ? raw
+            : '${raw}Z';
+        effectiveRefTime = DateTime.parse(normalized).toUtc();
+      } catch (_) {}
+    }
+    effectiveRefTime ??= DateTime.now().toUtc();
+
+    final nextSixHours = selectNextSixForecastHours(_rainfall?.hourly, effectiveRefTime);
+    final isRainfallStale = _rainfall?.provider.isStale == true ||
+        _rainfall?.provider.status == 'degraded';
+    final isAlertsStale = _alerts?.provider.isStale == true ||
+        _alerts?.provider.status == 'degraded';
+    final isAlertsUnavailable = _alerts?.provider.status == 'unavailable';
 
     return DraggableScrollableSheet(
       initialChildSize: 0.9,
@@ -203,7 +298,7 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                   children: [
                     // Official Data Notice
                     Container(
-                      padding: const EdgeInsets.all(14),
+                      padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: AppColors.background,
                         borderRadius: BorderRadius.circular(14),
@@ -225,24 +320,51 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                       ),
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 14),
 
                     // --- SECTION 1: PRECIPITATION FORECAST ---
                     _buildSectionTitle(
                       'Precipitation Forecast',
                       subtitle: _rainfall?.provider.retrievedAt != null
-                          ? 'Model Horizon (Open-Meteo)'
+                          ? (isRainfallStale
+                              ? '⚠ Stale Fallback'
+                              : 'Fetched: ${formatTimestampIst(_rainfall!.provider.retrievedAt)}')
                           : null,
                     ),
 
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
 
                     if (_rainfallError != null)
                       _buildErrorCard('Rainfall forecast unavailable', _rainfallError!)
                     else if (_rainfall != null) ...[
+                      // Stale / Degraded Warning Banner
+                      if (isRainfallStale)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: AppColors.riskModerate.withAlpha(26),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.riskModerate.withAlpha(77)),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.warning_amber_rounded, size: 18, color: AppColors.riskModerate),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Notice: Open-Meteo upstream is currently unreachable. Displaying cached forecast from ${formatTimestampIst(_rainfall!.provider.retrievedAt)}.',
+                                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.4),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
                       // Current Model Window
                       Container(
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
                           color: AppColors.background,
                           borderRadius: BorderRadius.circular(16),
@@ -251,24 +373,28 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text(
-                              'Current Model Estimate (15m window)',
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textMuted),
+                            Text(
+                              _rainfall!.current?.intervalSeconds != null
+                                  ? 'Current Model Estimate (${(_rainfall!.current!.intervalSeconds / 60).round()}m window)'
+                                  : 'Current Model Estimate (15m window)',
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textMuted),
                             ),
                             const SizedBox(height: 8),
-                            Row(
+                            Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 12,
+                              runSpacing: 4,
                               children: [
                                 Text(
                                   _rainfall!.current?.precipitationMm != null
                                       ? '${_rainfall!.current!.precipitationMm!.toStringAsFixed(1)} ${_rainfall!.current!.unit}'
-                                      : '0.0 mm',
+                                      : 'Unavailable',
                                   style: const TextStyle(
                                     fontSize: 26,
                                     fontWeight: FontWeight.w800,
                                     color: AppColors.textPrimary,
                                   ),
                                 ),
-                                const SizedBox(width: 12),
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                   decoration: BoxDecoration(
@@ -295,13 +421,13 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                         ),
                       ),
 
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 12),
 
-                      // Next 6 Hours Horizontal Carousel
+                      // Next Hours Horizontal Carousel
                       if (nextSixHours.isNotEmpty) ...[
-                        const Text(
-                          'Next 6 Hours Forecast',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                        Text(
+                          'Next ${nextSixHours.length} Hours Forecast (IST)',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
                         ),
                         const SizedBox(height: 8),
                         SizedBox(
@@ -312,15 +438,7 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                             separatorBuilder: (_, _) => const SizedBox(width: 8),
                             itemBuilder: (context, index) {
                               final step = nextSixHours[index];
-                              String timeLabel = step.timestamp;
-                              try {
-                                final dt = DateTime.parse(
-                                  step.timestamp.endsWith('Z') ? step.timestamp : '${step.timestamp}Z',
-                                ).toLocal();
-                                final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-                                final ampm = dt.hour >= 12 ? 'PM' : 'AM';
-                                timeLabel = '$hour:00 $ampm';
-                              } catch (_) {}
+                              final timeLabel = formatHourSlotIst(step.timestamp);
 
                               return Container(
                                 width: 96,
@@ -367,12 +485,12 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                         ),
                       ],
 
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 12),
 
                       // 24-Hour Horizon Summary
-                      if (_rainfall!.summary != null)
+                      if (_rainfall!.summary != null) ...[
                         Container(
-                          padding: const EdgeInsets.all(16),
+                          padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: AppColors.background,
                             borderRadius: BorderRadius.circular(16),
@@ -390,54 +508,186 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                                 ),
                               ),
                               const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: _buildMetricTile(
-                                      'Total Expected',
-                                      _rainfall!.summary!.totalPrecipitationMm != null
-                                          ? '${_rainfall!.summary!.totalPrecipitationMm!.toStringAsFixed(1)} mm'
-                                          : '—',
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: _buildMetricTile(
-                                      'Peak 1-Hour',
-                                      _rainfall!.summary!.maxHourlyPrecipitationMm != null
-                                          ? '${_rainfall!.summary!.maxHourlyPrecipitationMm!.toStringAsFixed(1)} mm'
-                                          : '—',
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: _buildMetricTile(
-                                      'Max Probability',
-                                      _rainfall!.summary!.maxProbabilityPct != null
-                                          ? '${_rainfall!.summary!.maxProbabilityPct!.round()}%'
-                                          : '—',
-                                    ),
-                                  ),
-                                ],
+                              Builder(
+                                builder: (context) {
+                                  final summary = _rainfall!.summary!;
+                                  final forecastHours = summary.forecastHours > 0 ? summary.forecastHours : 24;
+                                  final validHours = summary.validHours ??
+                                      (_rainfall!.hourly.isNotEmpty
+                                          ? _rainfall!.hourly.where((s) => s.precipitationMm != null).length
+                                          : null);
+                                  final isComplete = summary.isComplete;
+                                  final totalLabel = !isComplete && validHours != null
+                                      ? 'Total Expected (Partial: $validHours/${forecastHours}h)'
+                                      : 'Total Expected';
+                                  final probValue = summary.maxProbabilityPct;
+
+                                  return Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: _buildMetricTile(
+                                              totalLabel,
+                                              summary.totalPrecipitationMm != null
+                                                  ? '${summary.totalPrecipitationMm!.toStringAsFixed(1)} mm'
+                                                  : 'Unavailable',
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: _buildMetricTile(
+                                              'Peak 1-Hour',
+                                              summary.maxHourlyPrecipitationMm != null
+                                                  ? '${summary.maxHourlyPrecipitationMm!.toStringAsFixed(1)} mm'
+                                                  : 'Unavailable',
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                                              decoration: BoxDecoration(
+                                                color: AppColors.surface,
+                                                borderRadius: BorderRadius.circular(10),
+                                              ),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text(
+                                                    'Max Probability',
+                                                    style: TextStyle(fontSize: 10, color: AppColors.textMuted),
+                                                  ),
+                                                  const SizedBox(height: 4),
+                                                  Row(
+                                                    children: [
+                                                      SizedBox(
+                                                        width: 20,
+                                                        height: 20,
+                                                        child: Stack(
+                                                          alignment: Alignment.center,
+                                                          children: [
+                                                            const CircularProgressIndicator(
+                                                              value: 1.0,
+                                                              strokeWidth: 3,
+                                                              valueColor: AlwaysStoppedAnimation(AppColors.borderSubtle),
+                                                            ),
+                                                            if (probValue != null && probValue > 0)
+                                                              CircularProgressIndicator(
+                                                                value: (probValue / 100.0).clamp(0.0, 1.0),
+                                                                strokeWidth: 3,
+                                                                valueColor: const AlwaysStoppedAnimation(AppColors.amberText),
+                                                              ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      Text(
+                                                        probValue != null ? '${probValue.round()}%' : '—',
+                                                        style: const TextStyle(
+                                                          fontSize: 13,
+                                                          fontWeight: FontWeight.w700,
+                                                          color: AppColors.textPrimary,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      if (!isComplete && validHours != null)
+                                        Padding(
+                                          padding: const EdgeInsets.only(top: 8),
+                                          child: Text(
+                                            '* Incomplete forecast: ${forecastHours - validHours} of $forecastHours hourly intervals were missing from upstream model output.',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: AppColors.riskModerate,
+                                              fontStyle: FontStyle.italic,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  );
+                                },
                               ),
                             ],
                           ),
                         ),
+                      ] else ...[
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: AppColors.background,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.borderSubtle),
+                          ),
+                          child: const Text(
+                            '24-hour summary unavailable for this forecast coordinate.',
+                            style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                          ),
+                        ),
+                      ],
+
+                      // Open-Meteo Attribution
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8, bottom: 2),
+                        child: Text(
+                          'Weather forecast data from Open-Meteo.com (Licensed under CC BY 4.0).',
+                          style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                        ),
+                      ),
                     ],
 
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 14),
 
                     // --- SECTION 2: OFFICIAL DISASTER ALERTS ---
                     _buildSectionTitle(
                       'Official Disaster Warnings',
-                      subtitle: _alerts != null ? '${_alerts!.total} Active Warnings' : null,
+                      subtitle: _alerts != null
+                          ? (isAlertsStale
+                              ? '⚠ Stale Fallback (${_alerts!.total} Active)'
+                              : '${_alerts!.total} Active Warning${_alerts!.total == 1 ? '' : 's'}')
+                          : null,
                     ),
 
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
 
-                    if (_alertsError != null)
-                      _buildErrorCard('Alerts feed unavailable', _alertsError!)
+                    if (_alertsError != null || isAlertsUnavailable)
+                      _buildErrorCard(
+                        'Alerts feed unavailable',
+                        _alertsError ?? _alerts?.provider.errorMessage ?? 'Official alerts provider unavailable',
+                      )
                     else if (_alerts != null) ...[
+                      // Stale / Degraded Warning Banner
+                      if (isAlertsStale)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: AppColors.riskModerate.withAlpha(26),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.riskModerate.withAlpha(77)),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.warning_amber_rounded, size: 18, color: AppColors.riskModerate),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Notice: NDMA SACHET feed is unreachable. Displaying cached alerts from ${formatTimestampIst(_alerts!.provider.retrievedAt)}.',
+                                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.4),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
                       if (_alerts!.total == 0)
                         Container(
                           padding: const EdgeInsets.all(16),
@@ -490,23 +740,64 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                      decoration: BoxDecoration(
-                                        color: sevColor.withAlpha(26),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Text(
-                                        '${alert.severity.toUpperCase()} SEVERITY',
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
-                                          color: sevColor,
-                                        ),
+                                    Expanded(
+                                      child: Wrap(
+                                        spacing: 6,
+                                        runSpacing: 4,
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: sevColor.withAlpha(26),
+                                              borderRadius: BorderRadius.circular(8),
+                                            ),
+                                            child: Text(
+                                              '${alert.severity.toUpperCase()} SEVERITY',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w700,
+                                                color: sevColor,
+                                              ),
+                                            ),
+                                          ),
+                                          if (alert.event != null && alert.event!.trim().isNotEmpty)
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: AppColors.routePrimary.withAlpha(26),
+                                                borderRadius: BorderRadius.circular(8),
+                                              ),
+                                              child: Text(
+                                                alert.event!.trim(),
+                                                style: const TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: AppColors.routePrimary,
+                                                ),
+                                              ),
+                                            ),
+                                          if (alert.urgency.trim().isNotEmpty && alert.urgency.trim().toLowerCase() != 'unknown')
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: AppColors.amberText.withAlpha(26),
+                                                borderRadius: BorderRadius.circular(8),
+                                              ),
+                                              child: Text(
+                                                '${alert.urgency.trim()} Urgency',
+                                                style: const TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: AppColors.amberText,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
                                       ),
                                     ),
-                                    const Spacer(),
+                                    const SizedBox(width: 8),
                                     Text(
                                       alert.sender,
                                       style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
@@ -522,11 +813,49 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                                     color: AppColors.textPrimary,
                                   ),
                                 ),
-                                if (alert.areaDescription != null) ...[
+                                if (alert.areaDescription != null && alert.areaDescription!.trim().isNotEmpty) ...[
                                   const SizedBox(height: 4),
                                   Text(
-                                    'Areas: ${alert.areaDescription}',
+                                    'Affected Districts / Areas: ${alert.areaDescription}',
                                     style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                                  ),
+                                ],
+                                if (alert.effective != null || alert.expires != null) ...[
+                                  const SizedBox(height: 6),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Padding(
+                                        padding: EdgeInsets.only(top: 1),
+                                        child: Icon(Icons.schedule, size: 13, color: AppColors.textMuted),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text.rich(
+                                          TextSpan(
+                                            style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                                            children: [
+                                              if (alert.effective != null) ...[
+                                                const TextSpan(
+                                                  text: 'Effective: ',
+                                                  style: TextStyle(fontWeight: FontWeight.w600, color: AppColors.textSecondary),
+                                                ),
+                                                TextSpan(text: formatTimestampIst(alert.effective)),
+                                              ],
+                                              if (alert.effective != null && alert.expires != null)
+                                                const TextSpan(text: ' • '),
+                                              if (alert.expires != null) ...[
+                                                const TextSpan(
+                                                  text: 'Expires: ',
+                                                  style: TextStyle(fontWeight: FontWeight.w600, color: AppColors.textSecondary),
+                                                ),
+                                                TextSpan(text: formatTimestampIst(alert.expires)),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ],
                                 if (alert.description != null || alert.instruction != null) ...[
@@ -579,6 +908,15 @@ class _WeatherAlertsSheetState extends State<WeatherAlertsSheet> {
                             ),
                           );
                         }),
+
+                      // NDMA SACHET Attribution
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8, bottom: 2),
+                        child: Text(
+                          'Official disaster warnings from NDMA SACHET (Common Alerting Protocol 1.2).',
+                          style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                        ),
+                      ),
                     ],
                   ],
                 ),
