@@ -26,8 +26,24 @@ import 'route_polyline_layer.dart';
 class MapScreen extends StatefulWidget {
   final WeatherService? weatherService;
   final OsrmService? osrmService;
+  final bool showBottomDisclaimer;
+  final bool autoFetch;
+  final void Function(int initialTab)? onNavigateToWeather;
+  final RainfallResponse? initialRainfall;
+  final AlertListResponse? initialAlerts;
+  final void Function(RainfallResponse rain, AlertListResponse alerts)? onDataRefreshed;
 
-  const MapScreen({super.key, this.weatherService, this.osrmService});
+  const MapScreen({
+    super.key,
+    this.weatherService,
+    this.osrmService,
+    this.showBottomDisclaimer = true,
+    this.autoFetch = true,
+    this.onNavigateToWeather,
+    this.initialRainfall,
+    this.initialAlerts,
+    this.onDataRefreshed,
+  });
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -68,7 +84,44 @@ class _MapScreenState extends State<MapScreen> {
     super.initState();
     _osrmService = widget.osrmService ?? OsrmService();
     _weatherService = widget.weatherService ?? WeatherService();
-    _loadStatusData();
+
+    if (widget.initialRainfall != null || widget.initialAlerts != null) {
+      if (widget.initialRainfall != null) {
+        _rainfallData = widget.initialRainfall;
+        _updateRainSummary(widget.initialRainfall!);
+      }
+      if (widget.initialAlerts != null) {
+        _alertsData = widget.initialAlerts;
+        _alertCount = widget.initialAlerts!.total;
+      }
+    } else if (widget.autoFetch) {
+      _loadStatusData();
+    }
+  }
+
+  @override
+  void didUpdateWidget(MapScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialRainfall != oldWidget.initialRainfall && widget.initialRainfall != null) {
+      _rainfallData = widget.initialRainfall;
+      _updateRainSummary(widget.initialRainfall!);
+    }
+    if (widget.initialAlerts != oldWidget.initialAlerts && widget.initialAlerts != null) {
+      _alertsData = widget.initialAlerts;
+      _alertCount = widget.initialAlerts!.total;
+    }
+  }
+
+  void _updateRainSummary(RainfallResponse rain) {
+    final mm = rain.current?.precipitationMm ?? 0.0;
+    final desc = mm > 15
+        ? 'Heavy rain'
+        : mm > 5
+            ? 'Moderate rain'
+            : mm > 0.5
+                ? 'Light rain'
+                : 'Clear';
+    _rainSummary = '${mm.toStringAsFixed(1)} mm (15m) · $desc';
   }
 
   @override
@@ -128,6 +181,9 @@ class _MapScreenState extends State<MapScreen> {
             _alertCount = alerts.total;
           }
         });
+        if (_rainfallData != null && _alertsData != null) {
+          widget.onDataRefreshed?.call(_rainfallData!, _alertsData!);
+        }
       }
     } finally {
       if (mounted) {
@@ -290,6 +346,24 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  void _showWeatherSheet() {
+    WeatherAlertsSheet.show(
+      context,
+      weatherService: _weatherService,
+      initialRainfall: _rainfallData,
+      initialAlerts: _alertsData,
+      onDataRefreshed: (rain, alerts) {
+        setState(() {
+          _rainfallData = rain;
+          _alertsData = alerts;
+          _updateRainSummary(rain);
+          _alertCount = alerts.total;
+        });
+        widget.onDataRefreshed?.call(rain, alerts);
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final activeScenario = getDemoScenario(_selectedScenarioId);
@@ -302,28 +376,18 @@ class _MapScreenState extends State<MapScreen> {
         isRefreshing: _isRefreshing,
         onRefresh: _loadStatusData,
         onOpenWeather: () {
-          WeatherAlertsSheet.show(
-            context,
-            weatherService: _weatherService,
-            initialRainfall: _rainfallData,
-            initialAlerts: _alertsData,
-            onDataRefreshed: (rain, alerts) {
-              setState(() {
-                _rainfallData = rain;
-                _alertsData = alerts;
-                final mm = rain.current?.precipitationMm ?? 0.0;
-                final desc = mm > 15
-                    ? 'Heavy rain'
-                    : mm > 5
-                        ? 'Moderate rain'
-                        : mm > 0.5
-                            ? 'Light rain'
-                            : 'Clear';
-                _rainSummary = '${mm.toStringAsFixed(1)} mm (15m) · $desc';
-                _alertCount = alerts.total;
-              });
-            },
-          );
+          if (widget.onNavigateToWeather != null) {
+            widget.onNavigateToWeather!(0);
+          } else {
+            _showWeatherSheet();
+          }
+        },
+        onOpenAlerts: () {
+          if (widget.onNavigateToWeather != null) {
+            widget.onNavigateToWeather!(1);
+          } else {
+            _showWeatherSheet();
+          }
         },
         onOpenAbout: () => AboutSheet.show(context),
         onOpenSettings: () {
@@ -472,46 +536,49 @@ class _MapScreenState extends State<MapScreen> {
 
                     // Scrollable Route Planner Content
                     Expanded(
-                      child: RoutePlannerSheet(
-                        scrollController: scrollController,
-                        origin: _origin,
-                        destination: _destination,
-                        activeTarget: _activeTarget,
-                        onSelectTarget: _handleSelectTarget,
-                        onSelectOrigin: (loc) {
-                          _clearExistingRoute();
-                          setState(() {
-                            _origin = loc;
-                            if (_destination == null) {
-                              _activeTarget = RouteEndpointType.destination;
-                            }
-                          });
-                        },
-                        onSelectDestination: (loc) {
-                          _clearExistingRoute();
-                          setState(() {
-                            _destination = loc;
-                            if (_origin == null) {
-                              _activeTarget = RouteEndpointType.origin;
-                            }
-                          });
-                        },
-                        onSwap: _handleSwap,
-                        onClear: _handleClear,
-                        isIdentical: _isIdentical,
-                        routes: _routes,
-                        selectedRouteId: _selectedRouteId,
-                        onSelectRoute: (id) => setState(() => _selectedRouteId = id),
-                        routeStatus: _routeStatus,
-                        routeError: _routeError,
-                        onPlanRoute: _handlePlanRoute,
-                        onClearRoute: _clearExistingRoute,
-                        riskAssessments: _riskAssessments,
-                        selectedScenarioId: _selectedScenarioId,
-                        onSelectScenario: (scenarioId) {
-                          setState(() => _selectedScenarioId = scenarioId);
-                          _updateRiskAssessments();
-                        },
+                      child: Material(
+                        color: Colors.transparent,
+                        child: RoutePlannerSheet(
+                          scrollController: scrollController,
+                          origin: _origin,
+                          destination: _destination,
+                          activeTarget: _activeTarget,
+                          onSelectTarget: _handleSelectTarget,
+                          onSelectOrigin: (loc) {
+                            _clearExistingRoute();
+                            setState(() {
+                              _origin = loc;
+                              if (_destination == null) {
+                                _activeTarget = RouteEndpointType.destination;
+                              }
+                            });
+                          },
+                          onSelectDestination: (loc) {
+                            _clearExistingRoute();
+                            setState(() {
+                              _destination = loc;
+                              if (_origin == null) {
+                                _activeTarget = RouteEndpointType.origin;
+                              }
+                            });
+                          },
+                          onSwap: _handleSwap,
+                          onClear: _handleClear,
+                          isIdentical: _isIdentical,
+                          routes: _routes,
+                          selectedRouteId: _selectedRouteId,
+                          onSelectRoute: (id) => setState(() => _selectedRouteId = id),
+                          routeStatus: _routeStatus,
+                          routeError: _routeError,
+                          onPlanRoute: _handlePlanRoute,
+                          onClearRoute: _clearExistingRoute,
+                          riskAssessments: _riskAssessments,
+                          selectedScenarioId: _selectedScenarioId,
+                          onSelectScenario: (scenarioId) {
+                            setState(() => _selectedScenarioId = scenarioId);
+                            _updateRiskAssessments();
+                          },
+                        ),
                       ),
                     ),
                   ],
@@ -521,9 +588,11 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ],
       ),
-      bottomNavigationBar: PersistentDisclaimer(
-        onLearnMore: () => AboutSheet.show(context),
-      ),
+      bottomNavigationBar: widget.showBottomDisclaimer
+          ? PersistentDisclaimer(
+              onLearnMore: () => AboutSheet.show(context),
+            )
+          : null,
     );
   }
 }

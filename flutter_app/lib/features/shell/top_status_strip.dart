@@ -9,6 +9,7 @@ class TopStatusStrip extends StatelessWidget implements PreferredSizeWidget {
   final bool isRefreshing;
   final VoidCallback onRefresh;
   final VoidCallback onOpenWeather;
+  final VoidCallback? onOpenAlerts;
   final VoidCallback onOpenAbout;
   final VoidCallback onOpenSettings;
 
@@ -19,6 +20,7 @@ class TopStatusStrip extends StatelessWidget implements PreferredSizeWidget {
     required this.isRefreshing,
     required this.onRefresh,
     required this.onOpenWeather,
+    this.onOpenAlerts,
     required this.onOpenAbout,
     required this.onOpenSettings,
   });
@@ -88,6 +90,7 @@ class TopStatusStrip extends StatelessWidget implements PreferredSizeWidget {
                 children: [
                 // Rain Forecast Chip
                 InkWell(
+                  key: const Key('status_strip_rain_chip'),
                   onTap: onOpenWeather,
                   borderRadius: BorderRadius.circular(20),
                   child: Container(
@@ -118,7 +121,8 @@ class TopStatusStrip extends StatelessWidget implements PreferredSizeWidget {
 
                 // Alerts Chip
                 InkWell(
-                  onTap: onOpenWeather,
+                  key: const Key('status_strip_alerts_chip'),
+                  onTap: onOpenAlerts ?? onOpenWeather,
                   borderRadius: BorderRadius.circular(20),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),

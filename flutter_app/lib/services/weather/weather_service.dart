@@ -13,6 +13,13 @@ class _RainfallCacheEntry {
   _RainfallCacheEntry(this.data, this.timestamp);
 }
 
+class _AlertsCacheEntry {
+  final AlertListResponse data;
+  final DateTime timestamp;
+
+  _AlertsCacheEntry(this.data, this.timestamp);
+}
+
 class WeatherService {
   final http.Client _client;
   static const Duration cacheTtl = Duration(minutes: 5);
@@ -22,13 +29,17 @@ class WeatherService {
 
   final Map<String, _RainfallCacheEntry> _rainfallCache = {};
   final Map<String, Future<RainfallResponse>> _inFlightRequests = {};
+  final Map<String, _AlertsCacheEntry> _alertsCache = {};
+  final Map<String, Future<AlertListResponse>> _inFlightAlertsRequests = {};
 
   WeatherService({http.Client? client}) : _client = client ?? http.Client();
 
-  /// Clears in-memory cache (for testing).
+  /// Clears in-memory cache (for testing or explicit refresh).
   void clearCache() {
     _rainfallCache.clear();
     _inFlightRequests.clear();
+    _alertsCache.clear();
+    _inFlightAlertsRequests.clear();
   }
 
   /// Fetches rainfall forecast from FastAPI /api/v1/rainfall.
@@ -113,6 +124,28 @@ class WeatherService {
     final baseUrl = (customBaseUrl ?? AppConfig.apiBaseUrl).replaceAll(RegExp(r'/+$'), '');
     final endpoint = '$baseUrl/api/v1/alerts?active_only=$activeOnly';
 
+    // 1. Check in-memory 5-minute cache
+    final cached = _alertsCache[endpoint];
+    if (cached != null && DateTime.now().difference(cached.timestamp) < cacheTtl) {
+      return cached.data;
+    }
+
+    // 2. Reuse in-flight future for concurrent callers
+    if (_inFlightAlertsRequests.containsKey(endpoint)) {
+      return _inFlightAlertsRequests[endpoint]!;
+    }
+
+    final future = _executeAlertsRequest(endpoint);
+    _inFlightAlertsRequests[endpoint] = future;
+
+    try {
+      return await future;
+    } finally {
+      _inFlightAlertsRequests.remove(endpoint);
+    }
+  }
+
+  Future<AlertListResponse> _executeAlertsRequest(String endpoint) async {
     http.Response response;
     try {
       response = await _client.get(
@@ -144,7 +177,14 @@ class WeatherService {
     }
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
-    return AlertListResponse.fromJson(data);
+    final alerts = AlertListResponse.fromJson(data);
+
+    // Only cache if status is ok or degraded
+    if (alerts.provider.status == 'ok' || alerts.provider.status == 'degraded') {
+      _alertsCache[endpoint] = _AlertsCacheEntry(alerts, DateTime.now());
+    }
+
+    return alerts;
   }
 
   /// Convenience health check method.

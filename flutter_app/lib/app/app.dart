@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../core/theme/app_theme.dart';
-import '../features/map/map_screen.dart';
+import '../features/shell/main_navigation_shell.dart';
 import '../services/routing/osrm_service.dart';
 import '../services/weather/weather_service.dart';
 
@@ -20,7 +20,7 @@ class VarshaApp extends StatelessWidget {
       title: 'VARSHA',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      home: MapScreen(
+      home: MainNavigationShell(
         weatherService: weatherService,
         osrmService: osrmService,
       ),
