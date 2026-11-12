@@ -32,23 +32,29 @@ class ScenarioSelector extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Row(
-                children: [
-                  Text(
-                    'Demo Scenarios',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.amberText,
+              const Expanded(
+                child: Row(
+                  children: [
+                    Text(
+                      'Demo Scenarios',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.amberText,
+                      ),
                     ),
-                  ),
-                  SizedBox(width: 6),
-                  Text(
-                    '• Differential Risk Testing',
-                    style: TextStyle(fontSize: 11, color: AppColors.textMuted),
-                  ),
-                ],
+                    SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '• Differential Risk Testing',
+                        style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
               ),
+              const SizedBox(width: 8),
               Text(
                 activeScenario.hazards.isEmpty
                     ? '0 simulated hazards'

@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../models/route.dart';
 
-/// Layer rendering active and alternative route polylines on the map.
+/// Layer rendering active and alternative route polylines on the map with clear visual contrast.
 class RoutePolylineLayer extends StatelessWidget {
   final List<RoadRoute> routes;
   final String? selectedRouteId;
@@ -18,32 +19,33 @@ class RoutePolylineLayer extends StatelessWidget {
   Widget build(BuildContext context) {
     if (routes.isEmpty) return const SizedBox.shrink();
 
-    final activeRoute =
-        routes.firstWhere((r) => r.id == selectedRouteId, orElse: () => routes.first);
+    final activeRoute = routes.firstWhere(
+      (r) => r.id == selectedRouteId,
+      orElse: () => routes.first,
+    );
     final altRoutes = routes.where((r) => r.id != activeRoute.id).toList();
 
     final polylines = <Polyline>[];
 
-    // 1. Unselected Alternative Routes (rendered first, below active)
+    // 1. Unselected Alternative Routes (solid slate line, clear contrast against OSM tiles)
     for (final alt in altRoutes) {
       polylines.add(
         Polyline(
           points: alt.coordinates,
-          color: AppColors.routeAlternative.withAlpha(153),
-          strokeWidth: 4.5,
+          color: const Color(0xFF64748B),
+          strokeWidth: 5.0,
           strokeCap: StrokeCap.round,
           strokeJoin: StrokeJoin.round,
-          pattern: StrokePattern.dashed(segments: const [10, 8]),
         ),
       );
     }
 
-    // 2. Active Selected Route (rendered on top)
+    // 2. Active Selected Route (prominent primary amber stroke on top)
     polylines.add(
       Polyline(
         points: activeRoute.coordinates,
         color: AppColors.routePrimary,
-        strokeWidth: 6.0,
+        strokeWidth: 6.5,
         strokeCap: StrokeCap.round,
         strokeJoin: StrokeJoin.round,
       ),

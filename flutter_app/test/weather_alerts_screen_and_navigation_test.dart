@@ -193,7 +193,7 @@ void main() {
       // Initially on Map screen
       expect(find.text('Map'), findsWidgets);
       expect(find.text('Weather & Alerts'), findsWidgets);
-      expect(find.text('Plan your route'), findsOneWidget);
+      expect(find.text('Where to?'), findsOneWidget);
 
       // Verify bottom navigation bar destinations
       final navBar = tester.widget<NavigationBar>(find.byType(NavigationBar));
@@ -221,7 +221,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex, 0);
-      expect(find.text('Plan your route'), findsOneWidget);
+      expect(find.text('Where to?'), findsOneWidget);
     });
 
     testWidgets('Tapping TopStatusStrip chips navigates to respective Weather and Alerts tabs',

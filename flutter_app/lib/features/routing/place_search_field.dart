@@ -1,11 +1,15 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../models/place.dart';
 import '../../models/route.dart';
 import '../../services/places/places_service.dart';
 
 /// Place search card and autocomplete input matching React PlaceSearchInput.tsx.
+/// Uses an anchored floating [OverlayEntry] in compact mode to ensure suggestions never
+/// cause layout thrashing or vertical displacement of surrounding controls.
 class PlaceSearchField extends StatefulWidget {
   final RouteEndpointType endpointType;
   final String label;
@@ -16,6 +20,8 @@ class PlaceSearchField extends StatefulWidget {
   final VoidCallback onClear;
   final bool isActiveTarget;
   final VoidCallback onActivateTarget;
+  final bool isCompact;
+  final bool autofocus;
 
   const PlaceSearchField({
     super.key,
@@ -28,6 +34,8 @@ class PlaceSearchField extends StatefulWidget {
     required this.onClear,
     required this.isActiveTarget,
     required this.onActivateTarget,
+    this.isCompact = false,
+    this.autofocus = false,
   });
 
   @override
@@ -37,8 +45,10 @@ class PlaceSearchField extends StatefulWidget {
 class _PlaceSearchFieldState extends State<PlaceSearchField> {
   late final TextEditingController _controller;
   final FocusNode _focusNode = FocusNode();
+  final LayerLink _layerLink = LayerLink();
   late final PlacesService _placesService;
 
+  OverlayEntry? _overlayEntry;
   Timer? _debounceTimer;
   bool _isLoading = false;
   List<PlaceSuggestion> _remoteSuggestions = [];
@@ -53,15 +63,17 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
     _placesService = PlacesService();
 
     _focusNode.addListener(() {
-      setState(() {
-        if (_focusNode.hasFocus && _controller.text.isEmpty) {
-          _showDropdown = true;
-          _fallbackSuggestions = popularLandmarks.map((l) => l.toSuggestion()).toList();
-          _isCuratedFallback = true;
-        } else if (!_focusNode.hasFocus) {
-          _showDropdown = false;
-        }
-      });
+      if (_focusNode.hasFocus && _controller.text.isEmpty) {
+        _showDropdown = true;
+        _fallbackSuggestions = popularLandmarks
+            .map((l) => l.toSuggestion())
+            .toList();
+        _isCuratedFallback = true;
+      } else if (!_focusNode.hasFocus) {
+        _showDropdown = false;
+      }
+      _updateOverlay();
+      if (mounted) setState(() {});
     });
   }
 
@@ -80,9 +92,69 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
   @override
   void dispose() {
     _debounceTimer?.cancel();
+    _removeOverlay();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _updateOverlay() {
+    if (!mounted || !widget.isCompact) return;
+
+    if (_showDropdown) {
+      final overlay = Overlay.maybeOf(context);
+      if (overlay == null) return;
+
+      if (_overlayEntry == null) {
+        _overlayEntry = _createOverlayEntry();
+        overlay.insert(_overlayEntry!);
+      } else {
+        _overlayEntry!.markNeedsBuild();
+      }
+    } else {
+      _removeOverlay();
+    }
+  }
+
+  void _removeOverlay() {
+    _overlayEntry?.remove();
+    _overlayEntry = null;
+  }
+
+  OverlayEntry _createOverlayEntry() {
+    return OverlayEntry(
+      builder: (context) {
+        final renderBox = this.context.findRenderObject() as RenderBox?;
+        final size = renderBox?.size ?? const Size(300, 44);
+
+        final activeSuggestions = _remoteSuggestions.isNotEmpty
+            ? _remoteSuggestions
+            : _fallbackSuggestions;
+
+        return Positioned(
+          width: size.width,
+          child: CompositedTransformFollower(
+            link: _layerLink,
+            showWhenUnlinked: false,
+            offset: Offset(0, size.height + 4),
+            child: Material(
+              elevation: 8,
+              shadowColor: AppColors.shadowDark,
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 220),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.borderSubtle),
+                ),
+                child: _buildSuggestionsList(activeSuggestions),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _onQueryChanged(String query) {
@@ -94,13 +166,16 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
         _isLoading = false;
         _remoteSuggestions = [];
         if (clean.isEmpty && _focusNode.hasFocus) {
-          _fallbackSuggestions = popularLandmarks.map((l) => l.toSuggestion()).toList();
+          _fallbackSuggestions = popularLandmarks
+              .map((l) => l.toSuggestion())
+              .toList();
           _isCuratedFallback = true;
           _showDropdown = true;
         } else {
           _showDropdown = false;
         }
       });
+      _updateOverlay();
       return;
     }
 
@@ -108,6 +183,7 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
       _isLoading = true;
       _showDropdown = true;
     });
+    _updateOverlay();
 
     _debounceTimer = Timer(const Duration(milliseconds: 350), () async {
       try {
@@ -118,6 +194,7 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
             _remoteSuggestions = res.results;
             _isCuratedFallback = false;
           });
+          _updateOverlay();
         }
       } catch (err) {
         if (mounted) {
@@ -126,15 +203,23 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
           setState(() {
             _isLoading = false;
             _remoteSuggestions = [];
-            _fallbackSuggestions = localMatches.map((l) => l.toSuggestion()).toList();
+            _fallbackSuggestions = localMatches
+                .map((l) => l.toSuggestion())
+                .toList();
             _isCuratedFallback = true;
           });
+          _updateOverlay();
         }
       }
     });
   }
 
   void _selectPlace(PlaceSuggestion place) {
+    _removeOverlay();
+    _controller.text = place.name;
+    _focusNode.unfocus();
+    setState(() => _showDropdown = false);
+
     widget.onSelect(
       SelectedLocation(
         label: place.name,
@@ -147,12 +232,10 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
         landmarkId: place.source == 'curated' ? place.id : null,
       ),
     );
-    _controller.text = place.name;
-    _focusNode.unfocus();
-    setState(() => _showDropdown = false);
   }
 
   void _clearInput() {
+    _removeOverlay();
     _controller.clear();
     widget.onClear();
     setState(() {
@@ -172,6 +255,128 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
         ? _remoteSuggestions
         : _fallbackSuggestions;
 
+    if (widget.isCompact) {
+      return _buildCompact(context, activeSuggestions);
+    }
+    return _buildStandard(context, activeSuggestions);
+  }
+
+  Widget _buildCompact(
+    BuildContext context,
+    List<PlaceSuggestion> activeSuggestions,
+  ) {
+    return CompositedTransformTarget(
+      link: _layerLink,
+      child: SizedBox(
+        height: 44,
+        child: Row(
+          children: [
+            // Endpoint Indicator Badge
+            Container(
+              width: 20,
+              height: 20,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: _badgeColor,
+                shape: BoxShape.circle,
+              ),
+              child: Text(
+                widget.tagLetter,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Endpoint Label
+            Text(
+              widget.label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: widget.isActiveTarget
+                    ? AppColors.amberText
+                    : AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(width: 6),
+            // Input TextField
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                focusNode: _focusNode,
+                autofocus: widget.autofocus,
+                onChanged: _onQueryChanged,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textPrimary,
+                ),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: widget.placeholder,
+                  hintStyle: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMuted,
+                  ),
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 8,
+                  ),
+                ),
+              ),
+            ),
+            // Loading Indicator
+            if (_isLoading)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4.0),
+                child: SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            // Clear action
+            if (_controller.text.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.close, size: 16),
+                tooltip: 'Clear ${widget.label.toLowerCase()}',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: _clearInput,
+              ),
+            // Pick on Map action
+            IconButton(
+              icon: Icon(
+                Icons.my_location,
+                size: 16,
+                color: widget.isActiveTarget
+                    ? AppColors.amberText
+                    : AppColors.textMuted,
+              ),
+              tooltip: widget.isActiveTarget ? 'Target Active' : 'Pick on Map',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              onPressed: () {
+                _removeOverlay();
+                _focusNode.unfocus();
+                widget.onActivateTarget();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStandard(
+    BuildContext context,
+    List<PlaceSuggestion> activeSuggestions,
+  ) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
@@ -179,22 +384,23 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: widget.isActiveTarget ? AppColors.amber : AppColors.borderSubtle,
+          color: widget.isActiveTarget
+              ? AppColors.amber
+              : AppColors.borderSubtle,
           width: widget.isActiveTarget ? 1.5 : 1.0,
         ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header Row: Badge & "Pick on Map" Toggle
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Row(
                 children: [
                   Container(
-                    width: 22,
-                    height: 22,
+                    width: 24,
+                    height: 24,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: _badgeColor,
@@ -204,7 +410,7 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
                       widget.tagLetter,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 12,
+                        fontSize: 13,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
@@ -213,210 +419,278 @@ class _PlaceSearchFieldState extends State<PlaceSearchField> {
                   Text(
                     widget.label,
                     style: const TextStyle(
-                      fontSize: 13,
+                      fontSize: 14,
                       fontWeight: FontWeight.w700,
                       color: AppColors.textPrimary,
                     ),
                   ),
                 ],
               ),
-              InkWell(
-                onTap: widget.onActivateTarget,
-                borderRadius: BorderRadius.circular(16),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
+              TextButton.icon(
+                icon: Icon(
+                  Icons.my_location,
+                  size: 14,
+                  color: widget.isActiveTarget
+                      ? AppColors.amberText
+                      : AppColors.routePrimary,
+                ),
+                label: Text(
+                  widget.isActiveTarget ? 'Selecting on Map' : 'Pick on Map',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
                     color: widget.isActiveTarget
-                        ? AppColors.amberLight.withAlpha(51)
-                        : AppColors.background,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: widget.isActiveTarget ? AppColors.amber : AppColors.borderInteractive,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.my_location,
-                        size: 13,
-                        color: widget.isActiveTarget ? AppColors.amberText : AppColors.textMuted,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        widget.isActiveTarget ? 'Target Active' : 'Pick on Map',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: widget.isActiveTarget ? AppColors.amberText : AppColors.textSecondary,
-                        ),
-                      ),
-                    ],
+                        ? AppColors.amberText
+                        : AppColors.routePrimary,
                   ),
                 ),
+                style: TextButton.styleFrom(
+                  backgroundColor: widget.isActiveTarget
+                      ? AppColors.amber.withAlpha(26)
+                      : AppColors.background,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: () {
+                  _removeOverlay();
+                  _focusNode.unfocus();
+                  widget.onActivateTarget();
+                },
               ),
             ],
           ),
-
-          const SizedBox(height: 10),
-
-          // Search Text Input
-          TextField(
-            controller: _controller,
-            focusNode: _focusNode,
-            onChanged: _onQueryChanged,
-            style: const TextStyle(fontSize: 13, color: AppColors.textPrimary),
-            decoration: InputDecoration(
-              isDense: true,
-              hintText: widget.placeholder,
-              prefixIcon: const Icon(Icons.search, size: 18, color: AppColors.textMuted),
-              suffixIcon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_isLoading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 8.0),
-                      child: SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ),
-                  if (_controller.text.isNotEmpty)
-                    IconButton(
-                      icon: const Icon(Icons.close, size: 16),
-                      onPressed: _clearInput,
-                    ),
-                ],
-              ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.borderSubtle),
             ),
-          ),
-
-          // Autocomplete Dropdown List
-          if (_showDropdown) ...[
-            const SizedBox(height: 8),
-            Container(
-              constraints: const BoxConstraints(maxHeight: 200),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.borderSubtle),
-              ),
-              child: ListView(
-                shrinkWrap: true,
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    child: Text(
-                      _controller.text.isEmpty
-                          ? 'Popular Navi Mumbai Transit Hubs'
-                          : _isCuratedFallback
-                              ? 'Curated Local Landmarks (Fallback)'
-                              : 'Search Results (Geoapify)',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    focusNode: _focusNode,
+                    autofocus: widget.autofocus,
+                    onChanged: _onQueryChanged,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textPrimary,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: widget.placeholder,
+                      hintStyle: const TextStyle(
+                        fontSize: 12,
                         color: AppColors.textMuted,
                       ),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 10),
                     ),
                   ),
-                  if (_isLoading)
-                    const Padding(
-                      padding: EdgeInsets.all(12.0),
-                      child: Center(
-                        child: Text(
-                          'Searching places via Geoapify...',
-                          style: TextStyle(fontSize: 11, color: AppColors.textMuted),
-                        ),
-                      ),
-                    )
-                  else if (activeSuggestions.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(12.0),
-                      child: Text(
-                        'No matching places found. Tap "Pick on Map" to pin coordinates.',
-                        style: TextStyle(fontSize: 11, color: AppColors.textMuted),
-                      ),
-                    )
-                  else
-                    ...activeSuggestions.map((place) {
-                      return ListTile(
-                        dense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-                        leading: const Icon(Icons.location_on_outlined, size: 16, color: AppColors.textMuted),
-                        title: Text(
-                          place.name,
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
-                        ),
-                        subtitle: Text(
-                          place.formattedAddress,
-                          style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: place.source == 'curated'
-                                ? AppColors.amberLight.withAlpha(38)
-                                : AppColors.routePrimary.withAlpha(26),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            place.source == 'curated' ? 'Curated' : 'Geoapify',
-                            style: TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w700,
-                              color: place.source == 'curated' ? AppColors.amberText : AppColors.routePrimary,
-                            ),
-                          ),
-                        ),
-                        onTap: () => _selectPlace(place),
-                      );
-                    }),
-                ],
+                ),
+                if (_isLoading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4.0),
+                    child: SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                if (_controller.text.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 16),
+                    onPressed: _clearInput,
+                  ),
+              ],
+            ),
+          ),
+          if (_showDropdown) ...[
+            const SizedBox(height: 8),
+            Material(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.borderSubtle),
+                ),
+                child: _buildSuggestionsList(activeSuggestions),
               ),
             ),
           ],
-
-          const SizedBox(height: 6),
-
-          // Footer: Coordinate Info & Source Tag
-          if (widget.value != null)
-            Row(
-              children: [
-                Text(
-                  '${widget.value!.coordinates.latitude.toStringAsFixed(4)}° N, ${widget.value!.coordinates.longitude.toStringAsFixed(4)}° E',
-                  style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: AppColors.borderSubtle),
-                  ),
-                  child: Text(
-                    widget.value!.source == 'geoapify'
-                        ? 'Geoapify Place'
-                        : widget.value!.source == 'curated'
-                            ? 'Curated Landmark'
-                            : 'Pinned Coordinate',
-                    style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.textSecondary),
-                  ),
-                ),
-              ],
-            )
-          else
-            Text(
-              widget.isActiveTarget
-                  ? '🎯 Tap map to set ${widget.label.toLowerCase()} coordinates'
-                  : 'Type to search or tap "Pick on Map"',
-              style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
-            ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSuggestionsList(List<PlaceSuggestion> activeSuggestions) {
+    return ListView(
+      shrinkWrap: true,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      children: [
+        // Quick Action: Choose on Map
+        ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 0,
+          ),
+          leading: const Icon(
+            Icons.my_location,
+            size: 16,
+            color: AppColors.amberText,
+          ),
+          title: Text(
+            'Choose ${widget.label.toLowerCase()} on map',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: AppColors.amberText,
+            ),
+          ),
+          onTap: () {
+            _removeOverlay();
+            _focusNode.unfocus();
+            widget.onActivateTarget();
+          },
+        ),
+
+        // Quick Action: Current Location (if Origin)
+        if (widget.endpointType == RouteEndpointType.origin)
+          ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 0,
+            ),
+            leading: const Icon(
+              Icons.near_me,
+              size: 16,
+              color: AppColors.routePrimary,
+            ),
+            title: const Text(
+              'Navi Mumbai Pilot Center',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppColors.routePrimary,
+              ),
+            ),
+            subtitle: const Text(
+              'Nerul • Geographic Center',
+              style: TextStyle(fontSize: 10, color: AppColors.textMuted),
+            ),
+            onTap: () {
+              _selectPlace(
+                const PlaceSuggestion(
+                  id: 'navi-mumbai-center',
+                  name: 'Navi Mumbai Pilot Center',
+                  formattedAddress: 'Nerul • Transit Hub',
+                  latitude: 19.0330,
+                  longitude: 73.0297,
+                  source: 'curated',
+                ),
+              );
+            },
+          ),
+
+        const Divider(height: 1, color: AppColors.borderSubtle),
+
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Text(
+            _controller.text.isEmpty
+                ? 'Popular Navi Mumbai Transit Hubs'
+                : _isCuratedFallback
+                ? 'Curated Local Landmarks (Fallback)'
+                : 'Search Results (Geoapify)',
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textMuted,
+            ),
+          ),
+        ),
+        if (_isLoading)
+          const Padding(
+            padding: EdgeInsets.all(12.0),
+            child: Center(
+              child: Text(
+                'Searching places via Geoapify...',
+                style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+              ),
+            ),
+          )
+        else if (activeSuggestions.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(12.0),
+            child: Text(
+              'No matching places found. Tap "Pick on Map" to pin coordinates.',
+              style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+            ),
+          )
+        else
+          ...activeSuggestions.map((place) {
+            return ListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 0,
+              ),
+              leading: const Icon(
+                Icons.location_on_outlined,
+                size: 16,
+                color: AppColors.textMuted,
+              ),
+              title: Text(
+                place.name,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              subtitle: Text(
+                place.formattedAddress,
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: AppColors.textMuted,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: place.source == 'curated'
+                      ? AppColors.amberLight.withAlpha(38)
+                      : AppColors.routePrimary.withAlpha(26),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  place.source == 'curated' ? 'Curated' : 'Geoapify',
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    color: place.source == 'curated'
+                        ? AppColors.amberText
+                        : AppColors.routePrimary,
+                  ),
+                ),
+              ),
+              onTap: () => _selectPlace(place),
+            );
+          }),
+      ],
     );
   }
 }

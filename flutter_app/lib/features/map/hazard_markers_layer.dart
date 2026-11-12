@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../models/hazard.dart';
 
-/// Layer rendering simulated hazards on the map with interactive inspection dialogs.
+/// Layer rendering simulated hazards on the map with accessible 48x48px touch targets.
 class HazardMarkersLayer extends StatelessWidget {
   final List<HazardLocation> hazards;
+  final ValueChanged<HazardLocation>? onSelectHazard;
 
-  const HazardMarkersLayer({super.key, required this.hazards});
+  const HazardMarkersLayer({
+    super.key,
+    required this.hazards,
+    this.onSelectHazard,
+  });
 
   Color _getSeverityColor(HazardSeverity severity) {
     switch (severity) {
@@ -21,6 +27,11 @@ class HazardMarkersLayer extends StatelessWidget {
   }
 
   void _showHazardDetails(BuildContext context, HazardLocation hazard) {
+    if (onSelectHazard != null) {
+      onSelectHazard!(hazard);
+      return;
+    }
+
     final sevColor = _getSeverityColor(hazard.severity);
 
     showModalBottomSheet(
@@ -44,7 +55,10 @@ class HazardMarkersLayer extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: sevColor.withAlpha(26),
                       borderRadius: BorderRadius.circular(6),
@@ -59,21 +73,26 @@ class HazardMarkersLayer extends StatelessWidget {
                     ),
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.background,
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: const Text(
                       'SIMULATED DATA',
-                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted),
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textMuted,
+                      ),
                     ),
                   ),
                 ],
               ),
-
               const SizedBox(height: 12),
-
               Text(
                 hazard.name,
                 style: const TextStyle(
@@ -85,11 +104,12 @@ class HazardMarkersLayer extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                 hazard.area,
-                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                ),
               ),
-
               const SizedBox(height: 14),
-
               // Info Grid
               Container(
                 padding: const EdgeInsets.all(12),
@@ -103,11 +123,21 @@ class HazardMarkersLayer extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Hazard Type', style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
+                          const Text(
+                            'Hazard Type',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
                           const SizedBox(height: 2),
                           Text(
                             hazard.hazardType.displayName,
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                            ),
                           ),
                         ],
                       ),
@@ -116,11 +146,21 @@ class HazardMarkersLayer extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Coordinates', style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
+                          const Text(
+                            'Coordinates',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
                           const SizedBox(height: 2),
                           Text(
                             '${hazard.coordinates.latitude.toStringAsFixed(4)}° N, ${hazard.coordinates.longitude.toStringAsFixed(4)}° E',
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                            ),
                           ),
                         ],
                       ),
@@ -128,16 +168,16 @@ class HazardMarkersLayer extends StatelessWidget {
                   ],
                 ),
               ),
-
               const SizedBox(height: 12),
-
               Text(
                 hazard.description,
-                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.4),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                  height: 1.4,
+                ),
               ),
-
               const SizedBox(height: 14),
-
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -150,7 +190,10 @@ class HazardMarkersLayer extends StatelessWidget {
                     Expanded(
                       child: Text(
                         'Illustrative scenario for testing • Not a verified live incident',
-                        style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textMuted,
+                        ),
                       ),
                     ),
                   ],
@@ -172,9 +215,11 @@ class HazardMarkersLayer extends StatelessWidget {
 
         return Marker(
           point: hazard.coordinates,
-          width: size + 16,
-          height: size + 16,
+          // Accessible 48x48 logical pixels touch target
+          width: 48.0,
+          height: 48.0,
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: () => _showHazardDetails(context, hazard),
             child: Center(
               child: Stack(
@@ -200,7 +245,7 @@ class HazardMarkersLayer extends StatelessWidget {
                         BoxShadow(
                           color: AppColors.shadowDark,
                           blurRadius: 4,
-                          offset: Offset(2, 2),
+                          offset: Offset(0, 1),
                         ),
                       ],
                     ),

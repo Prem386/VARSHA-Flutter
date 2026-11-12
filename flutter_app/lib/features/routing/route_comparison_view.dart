@@ -56,37 +56,42 @@ class RouteComparisonView extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: AppColors.routePrimary.withAlpha(26),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    routes.length > 1
-                        ? 'OSRM Alternatives • ${routes.length} Found'
-                        : 'Route Retrieved',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.routePrimary,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.routePrimary.withAlpha(26),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      routes.length > 1
+                          ? 'OSRM Alternatives • ${routes.length} Found'
+                          : 'Route Retrieved',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.routePrimary,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  routes.length > 1 ? 'Alternative Route Comparison' : 'OSRM Road Route',
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textPrimary,
+                  const SizedBox(height: 4),
+                  Text(
+                    routes.length > 1 ? 'Alternative Route Comparison' : 'OSRM Road Route',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.textPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+            const SizedBox(width: 8),
             TextButton(
               onPressed: onClearRoute,
               child: Text(

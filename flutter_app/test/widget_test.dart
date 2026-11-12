@@ -78,17 +78,11 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Verify Brand Wordmark and Pilot Label in Status Strip
-    expect(find.text('VARSHA'), findsOneWidget);
-    expect(find.text('Pilot: Navi Mumbai'), findsOneWidget);
+    // Verify Google Maps-inspired initial search pill
+    expect(find.text('Where to?'), findsOneWidget);
 
     // Verify Persistent Disclaimer Strip at bottom
     expect(find.text('Learn more'), findsOneWidget);
-
-    // Verify Route Planner heading in bottom sheet
-    expect(find.text('Plan your route'), findsOneWidget);
-    expect(find.text('Origin'), findsOneWidget);
-    expect(find.text('Destination'), findsOneWidget);
 
     // Tap "Learn more" to open About sheet
     await tester.tap(find.text('Learn more'));
@@ -121,6 +115,6 @@ void main() {
 
     // Verify returned to main screen
     expect(find.text('About VARSHA'), findsNothing);
-    expect(find.text('Plan your route'), findsOneWidget);
+    expect(find.text('Where to?'), findsOneWidget);
   });
 }
