@@ -98,6 +98,22 @@ void main() {
     expect(find.text('About VARSHA'), findsOneWidget);
     expect(find.text('Simulated Data Notice'), findsOneWidget);
     expect(find.text('Navi Mumbai Pilot Focus'), findsOneWidget);
+    expect(find.text('Weather & Disaster Intelligence'), findsOneWidget);
+    expect(find.textContaining('predictive monsoon mobility'), findsWidgets);
+
+    // Verify hackathon and outdated references are absent
+    expect(find.textContaining('MY Bharat'), findsNothing);
+    expect(find.textContaining('Hackathon'), findsNothing);
+    expect(find.textContaining('college'), findsNothing);
+    expect(find.textContaining('mini project'), findsNothing);
+
+    // Scroll to verify product card at bottom
+    await tester.scrollUntilVisible(
+      find.text('VARSHA Monsoon Mobility'),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('VARSHA Monsoon Mobility'), findsOneWidget);
 
     // Dismiss About sheet
     await tester.tap(find.byTooltip('Close'));

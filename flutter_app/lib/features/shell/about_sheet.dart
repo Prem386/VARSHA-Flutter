@@ -86,6 +86,17 @@ class AboutSheet extends StatelessWidget {
                   controller: scrollController,
                   padding: const EdgeInsets.all(20),
                   children: [
+                    // Overview
+                    const Text(
+                      'VARSHA is a predictive monsoon mobility and route safety application designed to evaluate urban flood risks, monitor weather conditions, and help users identify safer travel corridors.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textPrimary,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
                     // Simulated Data Notice Card
                     Container(
                       padding: const EdgeInsets.all(16),
@@ -163,6 +174,15 @@ class AboutSheet extends StatelessWidget {
                           'threshold. Users can expand the breakdown on any route to see the exact hazards and points calculated.',
                     ),
 
+                    const SizedBox(height: 12),
+
+                    _buildAccordion(
+                      title: 'Weather & Disaster Intelligence',
+                      content:
+                          'Real-time rainfall monitoring and forecast modeling powered by Open-Meteo NWP, alongside official '
+                          'Common Alerting Protocol (CAP 1.2) emergency bulletins from NDMA SACHET to alert commuters to severe conditions.',
+                    ),
+
                     const SizedBox(height: 24),
 
                     // Data Sources & Attribution
@@ -184,7 +204,7 @@ class AboutSheet extends StatelessWidget {
 
                     const SizedBox(height: 24),
 
-                    // Hackathon / Project Credits
+                    // Product Information
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
@@ -196,7 +216,7 @@ class AboutSheet extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'MY Bharat Hackathon',
+                            'VARSHA Monsoon Mobility',
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w700,
@@ -205,11 +225,11 @@ class AboutSheet extends StatelessWidget {
                           ),
                           SizedBox(height: 4),
                           Text(
-                            'Built for the MY Bharat — Hack for Social Cause Hackathon. '
-                            'Phase 4: Route Risk Comparison & Monsoon Mobility Resilience.',
+                            'Predictive route safety and flood resilience system for municipal transit corridors.',
                             style: TextStyle(
                               fontSize: 12,
                               color: AppColors.textPrimary,
+                              height: 1.4,
                             ),
                           ),
                         ],
